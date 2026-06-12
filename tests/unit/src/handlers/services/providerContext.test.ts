@@ -337,7 +337,7 @@ describe('ProviderContext', () => {
       const mockContext = {
         ...mockRequestContext,
         requestHeaders: {
-          'x-llmadmin-custom-host': 'https://custom.openai.com',
+          'x-portkey-custom-host': 'https://custom.openai.com',
         },
       } as unknown as RequestContext;
 
