@@ -7,6 +7,7 @@ import {
   generateInvalidProviderResponseError,
 } from '../utils';
 import { convertOpenAIChatCompletionToMessagesResponse } from '../open-ai-base';
+import { isZhipuBusinessError, buildZhipuBusinessErrorResponse } from './utils';
 
 export const ZhipuMessagesConfig: ProviderConfig = {
   model: {
@@ -61,6 +62,11 @@ export const ZhipuMessagesResponseTransform = (
   response: Record<string, any>,
   responseStatus: number
 ): MessagesResponse | ErrorResponse => {
+  // NEW: Zhipu business-level failure (HTTP 200 + success:false / code!=200)
+  if (isZhipuBusinessError(response)) {
+    return buildZhipuBusinessErrorResponse(response);
+  }
+
   if ('message' in response && responseStatus !== 200) {
     return generateErrorResponse(
       {

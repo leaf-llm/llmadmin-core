@@ -1,5 +1,5 @@
 import { Context } from 'hono';
-import { CONTENT_TYPES } from '../globals';
+import { CONTENT_TYPES, ZHIPU } from '../globals';
 import Providers from '../providers';
 import { OpenAIChatCompleteJSONToStreamResponseTransform } from '../providers/openai/chatComplete';
 import { OpenAICompleteJSONToStreamResponseTransform } from '../providers/openai/complete';
@@ -13,12 +13,14 @@ import {
   handleOctetStreamResponse,
   handleStreamingMode,
   handleTextResponse,
+  peekZhipuStreamingBusinessError,
 } from './streamHandler';
 import { HookSpan } from '../middlewares/hooks';
 import { env } from 'hono/adapter';
 import { OpenAIModelResponseJSONToStreamGenerator } from '../providers/open-ai-base/createModelResponse';
 import { anthropicMessagesJsonToStreamGenerator } from '../providers/anthropic-base/utils/streamGenerator';
 import { endpointStrings } from '../providers/types';
+import { ZHIPU_BUSINESS_ERROR_MARKER } from '../providers/zhipu/utils';
 
 /**
  * Handles various types of responses based on the specified parameters
@@ -103,6 +105,19 @@ export async function responseHandler(
     const hooksManager = c.get('hooksManager');
     const span = hooksManager.getSpan(hookSpanId) as HookSpan;
     const hooksResult = span.getHooksResult();
+
+    // NEW: Zhipu business-error peek for streaming responses. Zhipu can
+    // return HTTP 200 with success:false inside the first SSE event. The
+    // gateway's fallback loop only inspects HTTP status, so without this
+    // peek the gateway would treat the stream as successful. We peek the
+    // first event; if it's a business error we return 424 directly.
+    if (provider === ZHIPU) {
+      const shortCircuit = await peekZhipuStreamingBusinessError(response);
+      if (shortCircuit) {
+        return { response: shortCircuit, responseJson: null };
+      }
+    }
+
     if (isCacheHit && responseTransformerFunction) {
       const streamingResponse = await handleJSONToStreamResponse(
         response,
@@ -174,8 +189,26 @@ export async function responseHandler(
     areSyncHooksAvailable
   );
 
+  // NEW: Zhipu business-level failure (HTTP 200 + body.success:false) needs
+  // to surface as a non-2xx so the gateway's fallback loop in
+  // tryTargetsRecursively (src/handlers/handlerUtils.ts:687-700) can move
+  // on to the next target. Rewrite the upstream status to 424.
+  let finalResponse = nonStreamingResponse.response;
+  if (
+    provider === ZHIPU &&
+    finalResponse.status === 200 &&
+    nonStreamingResponse.json &&
+    (nonStreamingResponse.json as any)[ZHIPU_BUSINESS_ERROR_MARKER] === true
+  ) {
+    finalResponse = new Response(finalResponse.body, {
+      status: 424,
+      statusText: 'Failed Dependency',
+      headers: finalResponse.headers,
+    });
+  }
+
   return {
-    response: nonStreamingResponse.response,
+    response: finalResponse,
     responseJson: nonStreamingResponse.json,
     originalResponseJson: nonStreamingResponse.originalResponseBodyJson,
   };

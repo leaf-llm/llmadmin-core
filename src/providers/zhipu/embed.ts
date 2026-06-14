@@ -2,6 +2,7 @@ import { ZHIPU } from '../../globals';
 import { EmbedResponse } from '../../types/embedRequestBody';
 import { ErrorResponse, ProviderConfig } from '../types';
 import { generateErrorResponse } from '../utils';
+import { isZhipuBusinessError, buildZhipuBusinessErrorResponse } from './utils';
 
 export const ZhipuEmbedConfig: ProviderConfig = {
   model: {
@@ -21,6 +22,11 @@ export const ZhipuEmbedResponseTransform: (
   response: ZhipuEmbedResponse | ErrorResponse,
   responseStatus: number
 ) => EmbedResponse | ErrorResponse = (response, responseStatus) => {
+  // NEW: handle Zhipu business-level failures (HTTP 200 + body.success:false)
+  if (isZhipuBusinessError(response)) {
+    return buildZhipuBusinessErrorResponse(response);
+  }
+
   if (responseStatus !== 200 && 'error' in response) {
     return generateErrorResponse(
       {

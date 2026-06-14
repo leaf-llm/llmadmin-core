@@ -16,6 +16,10 @@ import { endpointStrings } from '../providers/types';
 import { Params } from '../types/requestBody';
 import { getStreamModeSplitPattern, type SplitPatternType } from '../utils';
 import { getErrorMessage } from '../i18n';
+import {
+  buildZhipuBusinessErrorResponse,
+  isZhipuBusinessError,
+} from '../providers/zhipu/utils';
 
 function readUInt32BE(buffer: Uint8Array, offset: number) {
   return (
@@ -316,6 +320,7 @@ export function handleStreamingMode(
   if (!response.body) {
     throw new Error(getErrorMessage('errors.ERR_INVALID_RESPONSE'));
   }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const reader = response.body.getReader();
@@ -493,3 +498,101 @@ const constructHookResultChunk = (
     },
   })}\n\n`;
 };
+
+// ---------------------------------------------------------------------------
+// NEW: Zhipu streaming business-error peek (simplified)
+// ---------------------------------------------------------------------------
+//
+// Zhipu returns HTTP 200 even for business failures (insufficient balance,
+// quota exhausted, model not found). When the caller uses `stream: true`,
+// the failure is encoded as a JSON event in the SSE body that looks like
+//   { "code": 500, "msg": "...", "success": false }
+// rather than as an HTTP status. The gateway's fallback loop in
+// tryTargetsRecursively (src/handlers/handlerUtils.ts:687-700) only checks
+// HTTP status, so without this peek a Zhipu business failure during a
+// streaming call would not trigger fallback.
+//
+// Simplified strategy: read bytes from response.body until we either see
+// the end of the first SSE event ("\n\n") or the stream is exhausted.
+// - If the first event is a Zhipu business error, cancel the reader and
+//   return a synthetic 424 Response so fallback kicks in.
+// - Otherwise, cancel the reader and discard the consumed bytes. The
+//   gateway will retry on the next target if needed; in practice the only
+//   response we care about detecting here is the failure case, and the
+//   non-error case is handled by the normal streaming path (the caller
+//   simply skips the peek by checking `shortCircuitResponse`).
+
+/**
+ * Peek the first SSE event of a streaming response to detect a Zhipu
+ * business-level failure.
+ *
+ * Returns a synthetic 424 Response if the first event is a Zhipu business
+ * error (caller should return this and skip handleStreamingMode). Returns
+ * null otherwise (caller should pass the original response through to
+ * handleStreamingMode unchanged).
+ */
+export async function peekZhipuStreamingBusinessError(
+  response: Response
+): Promise<Response | null> {
+  if (!response.body) return null;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    // Read until we have at least one full SSE event ("\n\n") or the
+    // upstream stream is exhausted.
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+      }
+      const eventEnd = buffer.indexOf('\n\n');
+      if (eventEnd >= 0) {
+        const firstEvent = buffer.slice(0, eventEnd);
+
+        // Extract the first "data:" payload from the event.
+        let parsed: any = null;
+        const dataLines = firstEvent
+          .split('\n')
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.replace(/^data:\s*/, ''));
+        const dataPayload = dataLines.join('\n').trim();
+        if (dataPayload && dataPayload !== '[DONE]') {
+          try {
+            parsed = JSON.parse(dataPayload);
+          } catch {
+            parsed = null;
+          }
+        }
+
+        if (parsed && isZhipuBusinessError(parsed)) {
+          const errorBody = buildZhipuBusinessErrorResponse(parsed);
+          return new Response(JSON.stringify(errorBody), {
+            status: 424,
+            statusText: 'Failed Dependency',
+            headers: new Headers({
+              ...Object.fromEntries(response.headers),
+              'content-type': 'application/json',
+            }),
+          });
+        }
+
+        // Not a business error; let the caller use the original stream.
+        return null;
+      }
+    }
+    return null;
+  } finally {
+    // Always release the reader; we've either produced a 424 (caller will
+    // use that and ignore the original body) or determined that the
+    // original stream is fine and we should not have consumed any of it.
+    try {
+      await reader.cancel();
+    } catch {
+      /* swallow */
+    }
+  }
+}

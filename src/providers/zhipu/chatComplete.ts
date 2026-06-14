@@ -13,6 +13,7 @@ import {
   parseSSEChunk,
   buildOpenAIStreamChunk,
 } from '../open-ai-base';
+import { isZhipuBusinessError, buildZhipuBusinessErrorResponse } from './utils';
 
 export const ZhipuChatCompleteConfig = chatCompleteParams(
   [],
@@ -23,6 +24,13 @@ export const ZhipuChatCompleteResponseTransform: (
   response: any,
   responseStatus: number
 ) => ChatCompletionResponse | ErrorResponse = (response, responseStatus) => {
+  // NEW: Zhipu returns HTTP 200 + body.success:false for business failures
+  // (e.g. insufficient balance). Normalize into an ErrorResponse so that the
+  // response handler can rewrite the status to 424 and trigger fallback.
+  if (isZhipuBusinessError(response)) {
+    return buildZhipuBusinessErrorResponse(response);
+  }
+
   if ('message' in response && responseStatus !== 200) {
     return generateErrorResponse(
       {
