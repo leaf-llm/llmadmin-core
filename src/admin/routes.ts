@@ -282,4 +282,64 @@ adminApp.post('/providers/:provider/test-connectivity', async (c) => {
   });
 });
 
+adminApp.get('/provider-models', async (c) => {
+  const provider = c.req.query('provider') as ProviderId;
+  const configId = c.req.query('configId');
+
+  const providerConfig = Providers[provider];
+  if (!providerConfig?.api) {
+    return c.json({ object: 'list', data: [] }, 200);
+  }
+
+  const uiConfig = await loadUiConfig();
+  let resolvedApiKey = '';
+  let resolvedBaseUrl = '';
+
+  for (const providerConfigs of Object.values(uiConfig.providers)) {
+    const matched = providerConfigs?.find((cfg: any) => cfg.id === configId);
+    if (matched) {
+      resolvedApiKey = matched.apiKey?.trim() || '';
+      resolvedBaseUrl = matched.baseUrl?.trim() || '';
+      break;
+    }
+  }
+
+  if (!resolvedApiKey) {
+    return c.json({ object: 'list', data: [] }, 200);
+  }
+
+  const providerOptions = {
+    apiKey: resolvedApiKey,
+    customHost: resolvedBaseUrl,
+  };
+
+  try {
+    const endpoint = providerConfig.api.getEndpoint({
+      c,
+      providerOptions,
+      fn: 'listModels',
+      gatewayRequestBodyJSON: {},
+      gatewayRequestBody: {},
+      gatewayRequestURL: (resolvedBaseUrl || '') + '/models',
+    });
+
+    const url = (resolvedBaseUrl || '') + endpoint;
+    const headers = await providerConfig.api.headers({
+      c,
+      providerOptions,
+      fn: 'listModels',
+      transformedRequestBody: {},
+      transformedRequestUrl: url,
+      gatewayRequestBody: {},
+      headers: {},
+    });
+
+    const response = await fetch(url, { headers });
+    const json = await response.json();
+    return c.json(json);
+  } catch {
+    return c.json({ object: 'list', data: [] }, 200);
+  }
+});
+
 export { adminApp };
