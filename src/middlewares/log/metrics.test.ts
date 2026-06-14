@@ -270,3 +270,132 @@ describe('recordMetrics cache token accumulation', () => {
     expect(stored!.cacheInputTokens).toBe(3);
   });
 });
+
+describe('extractTokens Anthropic both cache fields', () => {
+  // Note: for normal Anthropic traffic, the response is rewritten into
+  // OpenAI shape by the provider transform before reaching extractTokens,
+  // so the OpenAI branch (prompt_tokens / prompt_tokens_details) handles
+  // the case. The dedicated Anthropic branch below is a fallback for
+  // raw-Anthropic-shape payloads and uses `||` between the two cache
+  // fields — pinning that behaviour down here.
+  test('falls back to cache_read_input_tokens when both fields are present (raw Anthropic shape)', () => {
+    const result = extractTokens(
+      {
+        usage: {
+          input_tokens: 100,
+          output_tokens: 5,
+          cache_read_input_tokens: 30,
+          cache_creation_input_tokens: 20,
+        },
+      },
+      'anthropic'
+    );
+    expect(result.inputTokens).toBe(100);
+    // With both fields present, `||` picks the first truthy value.
+    expect(result.cacheInputTokens).toBe(30);
+  });
+
+  test('uses cache_creation_input_tokens when cache_read is 0', () => {
+    const result = extractTokens(
+      {
+        usage: {
+          input_tokens: 80,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 25,
+        },
+      },
+      'anthropic'
+    );
+    expect(result.cacheInputTokens).toBe(25);
+  });
+
+  test('uses cache_read_input_tokens when cache_creation is absent', () => {
+    const result = extractTokens(
+      {
+        usage: {
+          input_tokens: 80,
+          output_tokens: 5,
+          cache_read_input_tokens: 25,
+        },
+      },
+      'anthropic'
+    );
+    expect(result.cacheInputTokens).toBe(25);
+  });
+});
+
+describe('recordMetrics Anthropic OpenAI-shaped payload', () => {
+  // This is the real production path: the Anthropic provider transform
+  // rewrites `input_tokens` (non-cached) into `prompt_tokens` that
+  // already includes cache reads + cache creations, so the OpenAI branch
+  // of extractTokens sees prompt_tokens >= cached_tokens. The cache
+  // accounting lives in prompt_tokens_details.cached_tokens (sum of both
+  // cache fields). This is what fixes the stats-page invariant
+  // `inputTokens >= cacheInputTokens`.
+  test('preserves inputTokens >= cacheInputTokens for Anthropic transformed payload', () => {
+    recordMetrics(200, [
+      {
+        providerOptions: { provider: 'anthropic' },
+        requestParams: {},
+        response: {
+          // Shape produced by getAnthropicChatCompleteResponseTransform
+          // after the fix.
+          usage: {
+            prompt_tokens: 150, // input_tokens(100) + cache_read(30) + cache_creation(20)
+            completion_tokens: 5,
+            total_tokens: 155,
+            prompt_tokens_details: {
+              cached_tokens: 50, // cache_read(30) + cache_creation(20)
+            },
+          },
+        },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const stored = metricsStore.get(today)?.get('anthropic');
+    expect(stored).toBeDefined();
+    expect(stored!.inputTokens).toBe(150);
+    expect(stored!.outputTokens).toBe(5);
+    expect(stored!.cacheInputTokens).toBe(50);
+    expect(stored!.inputTokens).toBeGreaterThanOrEqual(stored!.cacheInputTokens);
+  });
+
+  test('preserves inputTokens >= cacheInputTokens across multiple Anthropic requests', () => {
+    recordMetrics(200, [
+      {
+        providerOptions: { provider: 'anthropic' },
+        requestParams: {},
+        response: {
+          usage: {
+            prompt_tokens: 150,
+            completion_tokens: 5,
+            prompt_tokens_details: { cached_tokens: 50 },
+          },
+        },
+      } as any,
+    ]);
+    recordMetrics(200, [
+      {
+        providerOptions: { provider: 'anthropic' },
+        requestParams: {},
+        response: {
+          usage: {
+            prompt_tokens: 65,
+            completion_tokens: 10,
+            prompt_tokens_details: { cached_tokens: 15 },
+          },
+        },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const stored = metricsStore.get(today)?.get('anthropic');
+    expect(stored).toBeDefined();
+    expect(stored!.inputTokens).toBe(215);
+    expect(stored!.cacheInputTokens).toBe(65);
+    expect(stored!.inputTokens).toBeGreaterThanOrEqual(stored!.cacheInputTokens);
+  });
+});
+
