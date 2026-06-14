@@ -610,7 +610,14 @@ export const getAnthropicChatCompleteResponseTransform = (provider: string) => {
           },
         ],
         usage: {
-          prompt_tokens: input_tokens,
+          // Anthropic's `input_tokens` excludes cached input. Add the cache
+          // fields so the OpenAI-shaped payload reports the total input
+          // (cached + non-cached). This keeps the downstream invariant
+          // `prompt_tokens >= cached_tokens`.
+          prompt_tokens:
+            input_tokens +
+            (cache_creation_input_tokens ?? 0) +
+            (cache_read_input_tokens ?? 0),
           completion_tokens: output_tokens,
           total_tokens:
             input_tokens +
@@ -618,7 +625,11 @@ export const getAnthropicChatCompleteResponseTransform = (provider: string) => {
             (cache_creation_input_tokens ?? 0) +
             (cache_read_input_tokens ?? 0),
           prompt_tokens_details: {
-            cached_tokens: cache_read_input_tokens ?? 0,
+            // `cached_tokens` is the part of input that hit or populated
+            // Anthropic's prompt cache, so sum both read and creation.
+            cached_tokens:
+              (cache_read_input_tokens ?? 0) +
+              (cache_creation_input_tokens ?? 0),
           },
           ...(shouldSendCacheUsage && {
             cache_read_input_tokens: cache_read_input_tokens,
@@ -698,8 +709,18 @@ export const getAnthropicStreamChunkTransform = (provider: string) => {
 
     if (parsedChunk.type === 'message_start' && parsedChunk.message?.usage) {
       streamState.model = parsedChunk?.message?.model ?? '';
+      // Anthropic's `input_tokens` excludes cached input. Add cache reads
+      // and creations so the streamed OpenAI-shape usage block reports the
+      // total input. Keeps the downstream `prompt_tokens >= cached_tokens`
+      // invariant on the stats page.
+      const startInputTokens = parsedChunk.message?.usage?.input_tokens ?? 0;
+      const startCacheRead =
+        parsedChunk.message?.usage?.cache_read_input_tokens ?? 0;
+      const startCacheCreation =
+        parsedChunk.message?.usage?.cache_creation_input_tokens ?? 0;
       streamState.usage = {
-        prompt_tokens: parsedChunk.message?.usage?.input_tokens,
+        prompt_tokens:
+          startInputTokens + startCacheRead + startCacheCreation,
         ...(shouldSendCacheUsage && {
           cache_read_input_tokens:
             parsedChunk.message?.usage?.cache_read_input_tokens,
@@ -731,10 +752,11 @@ export const getAnthropicStreamChunkTransform = (provider: string) => {
 
     // final chunk
     if (parsedChunk.type === 'message_delta' && parsedChunk.usage) {
+      // total_tokens = prompt_tokens (which now includes cache reads +
+      // cache creations) + output_tokens. No need to add cache fields
+      // separately since they're already rolled into prompt_tokens.
       const totalTokens =
         (streamState?.usage?.prompt_tokens ?? 0) +
-        (streamState?.usage?.cache_creation_input_tokens ?? 0) +
-        (streamState?.usage?.cache_read_input_tokens ?? 0) +
         (parsedChunk.usage.output_tokens ?? 0);
       return (
         `data: ${JSON.stringify({
@@ -758,7 +780,12 @@ export const getAnthropicStreamChunkTransform = (provider: string) => {
             completion_tokens: parsedChunk.usage?.output_tokens,
             total_tokens: totalTokens,
             prompt_tokens_details: {
-              cached_tokens: streamState.usage?.cache_read_input_tokens ?? 0,
+              // Sum both cache reads and creations for the OpenAI-shaped
+              // `cached_tokens` field so streamed responses match the
+              // non-streamed semantics.
+              cached_tokens:
+                (streamState.usage?.cache_read_input_tokens ?? 0) +
+                (streamState.usage?.cache_creation_input_tokens ?? 0),
             },
           },
         })}` + '\n\n'
