@@ -61,6 +61,22 @@ export const ZhipuMessagesResponseTransform = (
   response: Record<string, any>,
   responseStatus: number
 ): MessagesResponse | ErrorResponse => {
+  if (
+    responseStatus === 200 &&
+    response?.success === false &&
+    typeof response?.msg === 'string'
+  ) {
+    return generateErrorResponse(
+      {
+        message: response.msg,
+        type: 'zhipu_business_error',
+        param: null,
+        code: response.code != null ? String(response.code) : null,
+      },
+      ZHIPU
+    );
+  }
+
   if ('message' in response && responseStatus !== 200) {
     return generateErrorResponse(
       {

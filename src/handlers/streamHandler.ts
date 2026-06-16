@@ -7,6 +7,7 @@ import {
   REQUEST_TIMEOUT_STATUS_CODE,
   PRECONDITION_CHECK_FAILED_STATUS_CODE,
   GOOGLE_VERTEX_AI,
+  ZHIPU,
 } from '../globals';
 import { HookSpan } from '../middlewares/hooks';
 import { VertexLlamaChatCompleteStreamChunkTransform } from '../providers/google-vertex-ai/chatComplete';
@@ -279,7 +280,17 @@ export async function handleNonStreamingMode(
   }
 
   return {
-    response: new Response(JSON.stringify(responseBodyJson), response),
+    response: new Response(JSON.stringify(responseBodyJson), {
+      ...response,
+      status:
+        response.status === 200 &&
+        originalResponseBodyJson &&
+        typeof originalResponseBodyJson === 'object' &&
+        (originalResponseBodyJson as any).success === false &&
+        typeof (originalResponseBodyJson as any).msg === 'string'
+          ? 402
+          : response.status,
+    }),
     json: responseBodyJson as Record<string, any>,
     // Send original response if transformer exists
     ...(responseTransformer && { originalResponseBodyJson }),
@@ -296,6 +307,189 @@ export function handleOctetStreamResponse(response: Response) {
 
 export function handleImageResponse(response: Response) {
   return new Response(response.body, response);
+}
+
+/**
+ * Peek the first SSE event of a Zhipu streaming response to detect
+ * business-level failures (HTTP 200 + { success: false, msg, code }).
+ *
+ * Zhipu's streaming endpoints (both /chat/completions and /messages)
+ * return the same { success: false, msg, code } envelope on the first
+ * SSE event when something like insufficient balance or model-not-found
+ * occurs. Without this peek, that envelope would be parsed by the normal
+ * OpenAI-style stream chunk transformer and bubble up to the client as
+ * a malformed/empty response, while the fallback loop never sees a
+ * non-2xx status and so never advances to the next target.
+ *
+ * Strategy: tee the upstream body, buffer the bytes from one branch
+ * until the first SSE event boundary (`\n\n`), then either:
+ *   - return a 402 synthetic Response with the normalized error
+ *     envelope (cancelling the live reader), or
+ *   - hand back a fresh Response whose body replays the buffered
+ *     prefix followed by the unconsumed tail of the upstream stream.
+ */
+export async function peekZhipuStreamingBusinessError(
+  response: Response
+): Promise<Response> {
+  if (!response.body || response.status !== 200) return response;
+
+  const [peekBranch, passBranch] = response.body.tee();
+  const reader = peekBranch.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (buffer.length < 32 * 1024) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const boundary = buffer.indexOf('\n\n');
+      if (boundary !== -1) {
+        const firstEvent = buffer.slice(0, boundary);
+        const remainderText = buffer.slice(boundary + 2);
+
+        const dataLine = firstEvent
+          .split('\n')
+          .find((l) => l.startsWith('data:'));
+        const payload = dataLine ? dataLine.slice(5).trim() : '';
+        let parsed: any = null;
+        if (payload && payload !== '[DONE]') {
+          try {
+            parsed = JSON.parse(payload);
+          } catch {
+            parsed = null;
+          }
+        }
+
+        const isBusinessError =
+          parsed &&
+          typeof parsed === 'object' &&
+          parsed.success === false &&
+          typeof parsed.msg === 'string';
+
+        if (isBusinessError) {
+          try {
+            await reader.cancel();
+          } catch {}
+          const errorBody = {
+            error: {
+              message: parsed.msg,
+              type: 'zhipu_business_error',
+              param: null,
+              code: parsed.code != null ? String(parsed.code) : null,
+            },
+            provider: ZHIPU,
+          };
+          return new Response(JSON.stringify(errorBody), {
+            status: 402,
+            statusText: 'Payment Required',
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+
+        // Normal first event — replay buffered prefix + remainder,
+        // with a debug header so we can see the actual chunk shape.
+        const prefixBytes = new TextEncoder().encode(
+          firstEvent + '\n\n' + remainderText
+        );
+        const replayed = new ReadableStream({
+          async start(controller) {
+            controller.enqueue(prefixBytes);
+            const r2 = passBranch.getReader();
+            try {
+              while (true) {
+                const { value, done } = await r2.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+            } finally {
+              controller.close();
+            }
+          },
+        });
+        try {
+          reader.releaseLock();
+        } catch {}
+        return new Response(replayed, {
+          ...response,
+          headers: {
+            ...Object.fromEntries(response.headers),
+            'x-zhipu-peek': JSON.stringify({ firstEvent, parsed }),
+          },
+        });
+      }
+    }
+  } catch {
+    // fall through to final replay
+  }
+
+  // No SSE boundary found. Check if the buffered content is a plain JSON
+  // business error (no SSE formatting at all — zhipu sometimes returns
+  // this for streaming errors).
+  let plainParsed: any = null;
+  try {
+    plainParsed = JSON.parse(buffer);
+  } catch {
+    plainParsed = null;
+  }
+  const isPlainBusinessError =
+    plainParsed &&
+    typeof plainParsed === 'object' &&
+    plainParsed.success === false &&
+    typeof plainParsed.msg === 'string';
+
+  if (isPlainBusinessError) {
+    // Cancel the pass branch and return a 402 with normalized error body.
+    try {
+      await reader.cancel();
+    } catch {}
+    const passReader = passBranch.getReader();
+    try {
+      await passReader.cancel();
+    } catch {}
+    const errorBody = {
+      error: {
+        message: plainParsed.msg,
+        type: 'zhipu_business_error',
+        param: null,
+        code: plainParsed.code != null ? String(plainParsed.code) : null,
+      },
+      provider: ZHIPU,
+    };
+    return new Response(JSON.stringify(errorBody), {
+      status: 402,
+      statusText: 'Payment Required',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  // Genuine stream with no SSE boundary yet — replay what we have.
+  const bufferedBytes = new TextEncoder().encode(buffer);
+  const passReader = passBranch.getReader();
+  try {
+    reader.releaseLock();
+  } catch {}
+  const replayed = new ReadableStream({
+    async start(controller) {
+      if (bufferedBytes.length) controller.enqueue(bufferedBytes);
+      try {
+        while (true) {
+          const { value, done } = await passReader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(replayed, {
+    ...response,
+    headers: {
+      ...Object.fromEntries(response.headers),
+      'x-zhipu-peek': JSON.stringify({ buffer }),
+    },
+  });
 }
 
 export function handleStreamingMode(
