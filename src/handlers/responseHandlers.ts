@@ -13,6 +13,7 @@ import {
   handleOctetStreamResponse,
   handleStreamingMode,
   handleTextResponse,
+  peekZhipuStreamingBusinessError,
 } from './streamHandler';
 import { HookSpan } from '../middlewares/hooks';
 import { env } from 'hono/adapter';
@@ -103,6 +104,16 @@ export async function responseHandler(
     const hooksManager = c.get('hooksManager');
     const span = hooksManager.getSpan(hookSpanId) as HookSpan;
     const hooksResult = span.getHooksResult();
+    // For Zhipu streaming, peek the first SSE event to detect a
+    // business-level failure (HTTP 200 + { success: false, msg, code })
+    // and rewrite it to 402 so the fallback loop can advance.
+    if (provider === 'zhipu') {
+      const peeked = await peekZhipuStreamingBusinessError(response);
+      if (peeked.status !== 200) {
+        return { response: peeked, responseJson: null };
+      }
+      response = peeked;
+    }
     if (isCacheHit && responseTransformerFunction) {
       const streamingResponse = await handleJSONToStreamResponse(
         response,
