@@ -337,8 +337,6 @@ export async function peekZhipuStreamingBusinessError(
   const reader = peekBranch.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let hitBoundary = false;
-  let erroredOut = false;
 
   try {
     while (buffer.length < 32 * 1024) {
@@ -347,7 +345,6 @@ export async function peekZhipuStreamingBusinessError(
       buffer += decoder.decode(value, { stream: true });
       const boundary = buffer.indexOf('\n\n');
       if (boundary !== -1) {
-        hitBoundary = true;
         const firstEvent = buffer.slice(0, boundary);
         const remainderText = buffer.slice(boundary + 2);
 
@@ -370,18 +367,7 @@ export async function peekZhipuStreamingBusinessError(
           parsed.success === false &&
           typeof parsed.msg === 'string';
 
-        console.log(
-          '[zhipu-peek] firstChunk raw:',
-          JSON.stringify(firstEvent),
-          '| parsed:',
-          JSON.stringify(parsed),
-          '| isBusinessError:',
-          isBusinessError
-        );
-
         if (isBusinessError) {
-          // Cancel the live reader; passBranch is GC'd since the
-          // returned Response uses the new body below.
           try {
             await reader.cancel();
           } catch {}
@@ -401,8 +387,8 @@ export async function peekZhipuStreamingBusinessError(
           });
         }
 
-        // Normal first event — replay the buffered prefix onto the
-        // passBranch and return a new Response with that replayed body.
+        // Normal first event — replay buffered prefix + remainder,
+        // with a debug header so we can see the actual chunk shape.
         const prefixBytes = new TextEncoder().encode(
           firstEvent + '\n\n' + remainderText
         );
@@ -424,17 +410,60 @@ export async function peekZhipuStreamingBusinessError(
         try {
           reader.releaseLock();
         } catch {}
-        return new Response(replayed, response);
+        return new Response(replayed, {
+          ...response,
+          headers: {
+            ...Object.fromEntries(response.headers),
+            'x-zhipu-peek': JSON.stringify({ firstEvent, parsed }),
+          },
+        });
       }
     }
   } catch {
-    erroredOut = true;
+    // fall through to final replay
   }
 
-  // No boundary found, stream ended cleanly, or we errored. Replay
-  // everything we buffered onto the passBranch and return a Response
-  // with that body. (We must consume our peekBranch entirely so the
-  // tee stays consistent.)
+  // No SSE boundary found. Check if the buffered content is a plain JSON
+  // business error (no SSE formatting at all — zhipu sometimes returns
+  // this for streaming errors).
+  let plainParsed: any = null;
+  try {
+    plainParsed = JSON.parse(buffer);
+  } catch {
+    plainParsed = null;
+  }
+  const isPlainBusinessError =
+    plainParsed &&
+    typeof plainParsed === 'object' &&
+    plainParsed.success === false &&
+    typeof plainParsed.msg === 'string';
+
+  if (isPlainBusinessError) {
+    // Cancel the pass branch and return a 402 with normalized error body.
+    try {
+      await reader.cancel();
+    } catch {}
+    const passReader = passBranch.getReader();
+    try {
+      await passReader.cancel();
+    } catch {}
+    const errorBody = {
+      error: {
+        message: plainParsed.msg,
+        type: 'zhipu_business_error',
+        param: null,
+        code: plainParsed.code != null ? String(plainParsed.code) : null,
+      },
+      provider: ZHIPU,
+    };
+    return new Response(JSON.stringify(errorBody), {
+      status: 402,
+      statusText: 'Payment Required',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  // Genuine stream with no SSE boundary yet — replay what we have.
   const bufferedBytes = new TextEncoder().encode(buffer);
   const passReader = passBranch.getReader();
   try {
@@ -454,10 +483,13 @@ export async function peekZhipuStreamingBusinessError(
       }
     },
   });
-  // Avoid an unused warning when the error branch isn't taken.
-  void hitBoundary;
-  void erroredOut;
-  return new Response(replayed, response);
+  return new Response(replayed, {
+    ...response,
+    headers: {
+      ...Object.fromEntries(response.headers),
+      'x-zhipu-peek': JSON.stringify({ buffer }),
+    },
+  });
 }
 
 export function handleStreamingMode(
