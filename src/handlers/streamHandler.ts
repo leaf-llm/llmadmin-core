@@ -370,6 +370,15 @@ export async function peekZhipuStreamingBusinessError(
           parsed.success === false &&
           typeof parsed.msg === 'string';
 
+        console.log(
+          '[zhipu-peek] firstChunk raw:',
+          JSON.stringify(firstEvent),
+          '| parsed:',
+          JSON.stringify(parsed),
+          '| isBusinessError:',
+          isBusinessError
+        );
+
         if (isBusinessError) {
           // Cancel the live reader; passBranch is GC'd since the
           // returned Response uses the new body below.
