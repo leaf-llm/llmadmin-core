@@ -9,14 +9,38 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { realTimeHandlerNode } from './handlers/realtimeHandlerNode';
 import { requestValidator } from './middlewares/requestValidator';
 import { addLogClient, removeLogClient, getCurrentTotals } from './middlewares/log/index';
+import { setConfigPath, loadConfig } from './configShared';
 
-// Extract the port number from the command line arguments
-const defaultPort = 8700;
+// Extract command line arguments
 const args = process.argv.slice(2);
-const portArg = args.find((arg) => arg.startsWith('--port='));
-const port = portArg ? parseInt(portArg.split('=')[1]) : defaultPort;
 
+// Config path (passed by desktop app via --config=<path>)
+const configArg = args.find((arg) => arg.startsWith('--config='));
+const configPath = configArg ? configArg.split('=')[1] : './conf.json';
+setConfigPath(configPath);
+
+// Port and headless mode
+const defaultPort = 8700;
+const portArg = args.find((arg) => arg.startsWith('--port='));
 const isHeadless = args.includes('--headless');
+
+// Determine effective port: CLI --port wins, then config file, then default
+let effectivePort = defaultPort;
+if (portArg) {
+  effectivePort = parseInt(portArg.split('=')[1]);
+} else {
+  try {
+    const { readFileSync } = await import('fs');
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (parsed?.server?.port) {
+      effectivePort = parsed.server.port;
+    }
+  } catch {}
+}
+
+// Load config into cache (async, for use by config.store.ts etc.)
+loadConfig().catch(() => {});
 
 // Detect if running as compiled bun binary (production) or in dev mode
 const isBunBinary =
@@ -254,10 +278,10 @@ app.get(
 
 const server = serve({
   fetch: app.fetch,
-  port: port,
+  port: effectivePort,
 });
 
-const url = `http://localhost:${port}`;
+const url = `http://localhost:${effectivePort}`;
 
 injectWebSocket(server);
 
