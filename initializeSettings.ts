@@ -52,24 +52,29 @@ export const getSettings = async () => {
     if (!isFetchSettingsFromFile) {
       return undefined;
     }
-    let settings: any = undefined;
-    const { readFile } = await import('fs/promises');
-    const settingsFile = await readFile('./conf.json', 'utf-8');
-    const settingsFileJson = JSON.parse(settingsFile);
 
-    if (settingsFileJson) {
-      settings = {};
-      settings.organisationDetails = defaultOrganisationDetails;
-      if (settingsFileJson.integrations) {
-        settings.integrations = transformIntegrations(
-          settingsFileJson.integrations
-        );
-      }
-      return settings;
+    // Dynamic import to avoid circular dependency
+    const { getConfig } = await import('./src/configShared');
+    const config = getConfig() as any;
+
+    if (!config?.settings) {
+      return undefined;
     }
+
+    const settings: any = {
+      organisationDetails: defaultOrganisationDetails,
+    };
+
+    if (config.settings.integrations) {
+      settings.integrations = transformIntegrations(
+        config.settings.integrations
+      );
+    }
+
+    return settings;
   } catch (error) {
     console.log(
-      'WARNING: unable to load settings from your conf.json file',
+      'WARNING: unable to load settings from config',
       error
     );
   }
