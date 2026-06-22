@@ -2322,6 +2322,8 @@ describe('jwt handler', () => {
   const mockEventType = 'beforeRequestHook';
 
   it('should validate a valid JWT token', async () => {
+    // The JWT below is the canonical RFC 7515 §A.1 example ("John Doe"). It is a
+    // publicly known test fixture and is not a real secret.
     const context: PluginContext = {
       headers: {
         Authorization:

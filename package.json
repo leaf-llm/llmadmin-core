@@ -1,9 +1,17 @@
 {
-  "name": "llm-admin-gateway",
+  "name": "llmadmin-core",
   "version": "0.1.0",
   "private": true,
-  "description": "A fast AI gateway by LLM Admin",
+  "description": "A fast, self-hosted LLM gateway. One local binary, OpenAI- and Anthropic-compatible APIs, built-in admin and metrics — no external SaaS.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<org>/<repo>.git"
+  },
+  "homepage": "https://github.com/<org>/<repo>#readme",
+  "bugs": {
+    "url": "https://github.com/<org>/<repo>/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "npm run dev:workerd",

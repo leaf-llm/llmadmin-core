@@ -1,48 +1,120 @@
 {
-  "plugins_enabled": [
-    "default",
-    "portkey",
-    "aporia",
-    "sydelabs",
-    "pillar",
-    "patronus",
-    "pangea",
-    "promptsecurity",
-    "panw-prisma-airs",
-    "walledai"
-  ],
-  "credentials": {
-    "portkey": {
-      "apiKey": "..."
-    }
+  "settings": {
+    "plugins_enabled": ["default"],
+    "credentials": {},
+    "cache": false,
+    "integrations": []
   },
-  "cache": false,
-  "integrations": [
-    {
-      "provider": "anthropic",
-      "slug": "dev_team_anthropic",
-      "credentials": {
-        "apiKey": "sk-ant-"
-      },
-      "rate_limits": [
+  "gateway": {
+    "providers": {
+      "openai": [
         {
-          "type": "requests",
-          "unit": "rph",
-          "value": 3
-        },
-        {
-          "type": "tokens",
-          "unit": "rph",
-          "value": 3000
+          "id": "REPLACE_ME",
+          "apiKey": "REPLACE_ME",
+          "baseUrl": "https://api.openai.com/v1",
+          "lastSyncedAt": "2026-01-01T00:00:00.000Z",
+          "remark": "Config 1"
         }
       ],
-      "models": [
+      "anthropic": [
         {
-          "slug": "claude-3-7-sonnet-20250219",
-          "status": "active",
-          "pricing_config": null
+          "id": "REPLACE_ME",
+          "apiKey": "REPLACE_ME",
+          "baseUrl": "https://api.anthropic.com/v1",
+          "baseUrlAnthropic": "https://api.anthropic.com/v1",
+          "lastSyncedAt": "2026-01-01T00:00:00.000Z",
+          "remark": "Config 1",
+          "apiFormat": "anthropic"
+        }
+      ],
+      "deepseek": [
+        {
+          "id": "REPLACE_ME",
+          "apiKey": "REPLACE_ME",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "baseUrlAnthropic": "https://api.deepseek.com/anthropic/v1",
+          "lastSyncedAt": "2026-01-01T00:00:00.000Z",
+          "remark": "Config 1",
+          "apiFormat": "openai"
         }
       ]
+    },
+    "text": {
+      "routing": [
+        {
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "configId": "REPLACE_ME",
+          "isPrimary": true
+        },
+        {
+          "provider": "anthropic",
+          "model": "claude-3-5-sonnet-latest",
+          "configId": "REPLACE_ME",
+          "isPrimary": true
+        },
+        {
+          "provider": "deepseek",
+          "model": "deepseek-chat",
+          "configId": "REPLACE_ME",
+          "isPrimary": false
+        }
+      ],
+      "userConfig": {
+        "strategy": {
+          "mode": "fallback",
+          "on_status_codes": [400, 402, 424, 429, 500, 502, 503, 504]
+        },
+        "targets": [
+          {
+            "provider": "openai",
+            "api_key": "REPLACE_ME",
+            "override_params": { "model": "gpt-4o-mini" },
+            "custom_host": "https://api.openai.com/v1"
+          },
+          {
+            "provider": "anthropic",
+            "api_key": "REPLACE_ME",
+            "override_params": { "model": "claude-3-5-sonnet-latest" },
+            "custom_host": "https://api.anthropic.com/v1",
+            "custom_host_anthropic": "https://api.anthropic.com/v1"
+          },
+          {
+            "strategy": {
+              "mode": "loadbalance"
+            },
+            "targets": [
+              {
+                "provider": "deepseek",
+                "api_key": "REPLACE_ME",
+                "override_params": { "model": "deepseek-chat" },
+                "custom_host": "https://api.deepseek.com/v1",
+                "custom_host_anthropic": "https://api.deepseek.com/anthropic/v1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "image": {
+      "routing": [],
+      "userConfig": null
+    },
+    "video": {
+      "routing": [],
+      "userConfig": null
+    },
+    "audio": {
+      "routing": [],
+      "userConfig": null
+    },
+    "mcp": {
+      "routing": [],
+      "userConfig": null
     }
-  ]
+  },
+  "server": {
+    "port": 8700,
+    "headless": false
+  }
 }
