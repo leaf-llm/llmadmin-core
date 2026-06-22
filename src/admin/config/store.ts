@@ -1,11 +1,12 @@
 import { getRuntimeKey } from 'hono/adapter';
+import { stat } from 'fs/promises';
 
 import {
   ModelCategory,
   MODEL_CATEGORIES,
   ProviderId,
 } from '../types';
-import { getConfig } from '../../configShared';
+import { getConfig, getConfigPath, loadConfig } from '../../configShared';
 
 export const SUPPORTED_PROVIDERS: ProviderId[] = [
   'openai',
@@ -62,25 +63,44 @@ function getDefaultUiConfig(): UiConfigFile {
   };
 }
 
+// mtime-based cache: conf.json 被任何写入者（前端、手动编辑等）修改后，
+// 下次调用 loadUiConfig 会通过 stat 检测到并重新加载。
+let cachedUiConfig: UiConfigFile | null = null;
+let cachedMtime: number | null = null;
+
 export async function loadUiConfig(): Promise<UiConfigFile> {
   const runtime = getRuntimeKey();
   if (runtime !== 'node' && runtime !== 'bun') {
     throw new Error('UI config store is only supported in node or bun runtime');
   }
 
-  const unified = getConfig() as any;
-  if (unified?.gateway) {
-    return {
-      providers: unified.gateway.providers || {},
-      text: unified.gateway.text,
-      image: unified.gateway.image,
-      video: unified.gateway.video,
-      audio: unified.gateway.audio,
-      mcp: unified.gateway.mcp,
-    };
+  const configPath = getConfigPath();
+  let currentMtime: number | null = null;
+  try {
+    const fileStat = await stat(configPath);
+    currentMtime = fileStat.mtimeMs;
+  } catch (e: any) {
+    if (e?.code !== 'ENOENT') throw e;
   }
 
-  return getDefaultUiConfig();
+  if (cachedUiConfig && cachedMtime === currentMtime) {
+    return cachedUiConfig;
+  }
+
+  await loadConfig();
+  const unified = getConfig() as any;
+  cachedUiConfig = unified?.gateway
+    ? {
+        providers: unified.gateway.providers || {},
+        text: unified.gateway.text,
+        image: unified.gateway.image,
+        video: unified.gateway.video,
+        audio: unified.gateway.audio,
+        mcp: unified.gateway.mcp,
+      }
+    : getDefaultUiConfig();
+  cachedMtime = currentMtime;
+  return cachedUiConfig;
 }
 
 export async function loadUserConfig(
