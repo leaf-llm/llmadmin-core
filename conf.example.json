@@ -1,6 +1,6 @@
 {
   "settings": {
-    "plugins_enabled": ["default"],
+    "plugins_enabled": ["default", "promptcache"],
     "credentials": {},
     "cache": false,
     "integrations": []
@@ -77,7 +77,20 @@
             "api_key": "REPLACE_ME",
             "override_params": { "model": "claude-3-5-sonnet-latest" },
             "custom_host": "https://api.anthropic.com/v1",
-            "custom_host_anthropic": "https://api.anthropic.com/v1"
+            "custom_host_anthropic": "https://api.anthropic.com/v1",
+            "inputMutators": [
+              {
+                "type": "plugin",
+                "name": "Prompt Cache",
+                "id": "promptcache.promptCache",
+                "parameters": {
+                  "fixedPrompt": "You are a careful, helpful assistant. Always answer in English.",
+                  "applyToRole": "system",
+                  "createIfMissing": true,
+                  "addBreakpointToLastUser": true
+                }
+              }
+            ]
           },
           {
             "strategy": {

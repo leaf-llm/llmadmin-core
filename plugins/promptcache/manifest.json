@@ -1,0 +1,40 @@
+{
+  "id": "promptcache",
+  "description": "Attaches Anthropic cache_control: ephemeral markers to a fixed prompt and the last user message to enable prompt caching upstream.",
+  "credentials": null,
+  "functions": [
+    {
+      "name": "Prompt Cache",
+      "id": "promptCache",
+      "type": "transformer",
+      "supportedHooks": ["beforeRequestHook"],
+      "description": "Ensures a fixed-prompt message is present with cache_control, and marks the last user message as a cache breakpoint. Operates on Anthropic-format /v1/messages requests only — OpenAI-format chat completions are not supported because the OpenAI translator (src/providers/openai/messages.ts) drops cache_control from the wire payload, and the OpenAI upstream uses a different caching mechanism (prompt_cache_key) that requires a stable identifier across requests.",
+      "parameters": {
+        "type": "object",
+        "required": ["fixedPrompt"],
+        "properties": {
+          "fixedPrompt": {
+            "type": "string",
+            "description": "The fixed prompt to ensure is present in the conversation. Required, must be a non-empty string."
+          },
+          "applyToRole": {
+            "type": "string",
+            "enum": ["system", "user", "assistant"],
+            "default": "system",
+            "description": "Role of the message that will carry the fixed prompt. Defaults to 'system'. Recommend 'system' to avoid the fixed-prompt message and the last-user breakpoint being applied to the same message."
+          },
+          "createIfMissing": {
+            "type": "boolean",
+            "default": true,
+            "description": "If true and no message with the chosen role exists, the plugin creates one. If false, bails out without modifying the request."
+          },
+          "addBreakpointToLastUser": {
+            "type": "boolean",
+            "default": true,
+            "description": "If true, attaches a cache_control ephemeral breakpoint to the last text block of the last user message."
+          }
+        }
+      }
+    }
+  ]
+}
