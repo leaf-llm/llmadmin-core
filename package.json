@@ -25,7 +25,7 @@
     "test:gateway": "jest src/",
     "test:plugins": "jest plugins/",
     "pre-push": "npm run build && node start-test.js",
-    "bun:dev": "bun run src/start-server.ts",
+    "bun:dev": "bun run src/start-server.ts --port=8701 --headless --quiet-log --config=../conf.json",
     "bun:build": "bun build src/start-server.ts --compile --target=bun --minify --outfile=build/llm-gateway",
     "bun:start": "bun run build/llm-gateway"
   },
