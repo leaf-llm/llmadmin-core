@@ -32,19 +32,19 @@ export const handler: PluginHandler = async (
 
     // Determine verdict based on not parameter
     const matches = match !== null;
-    verdict = not ? !matches : matches;
+    // not=false: we want to ensure the text does NOT contain the pattern
+    //   (e.g. PII). A match → verdict=false (content is unsafe).
+    // not=true:  we want to ensure the text DOES contain the pattern.
+    //   No match → verdict=false (content is unsafe).
+    verdict = not ? matches : !matches;
 
     data = {
       regexPattern,
       not,
       verdict,
       explanation: verdict
-        ? not
-          ? `The regex pattern '${regexPattern}' did not match the text as expected.`
-          : `The regex pattern '${regexPattern}' successfully matched the text.`
-        : not
-          ? `The regex pattern '${regexPattern}' matched the text when it should not have.`
-          : `The regex pattern '${regexPattern}' did not match the text.`,
+        ? `The regex pattern '${regexPattern}' ${not ? 'matched' : 'did not match'} the text${not ? ' as expected.' : '.'}`
+        : `The regex pattern '${regexPattern}' ${not ? 'did not match' : 'matched'} the text${not ? ' when it was expected to.' : ' when it should not have.'}`,
       matchDetails: match
         ? {
             matchedText: match[0],

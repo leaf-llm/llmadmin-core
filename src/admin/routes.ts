@@ -5,6 +5,12 @@ import { getUsage } from './billing';
 import { metricsStore } from '../middlewares/log';
 import Providers from '../providers/index';
 import { loadUiConfig } from './config/store';
+import {
+  listPlugins,
+  setPluginEnabled,
+  setPluginCredentials,
+  setPresetEnabled,
+} from './plugins';
 
 import { ProviderId } from './types';
 
@@ -340,6 +346,70 @@ adminApp.get('/provider-models', async (c) => {
   } catch {
     return c.json({ object: 'list', data: [] }, 200);
   }
+});
+
+adminApp.get('/plugins', async (c) => {
+  const plugins = await listPlugins();
+  return c.json({ plugins });
+});
+
+const SetPluginEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
+
+adminApp.put('/plugins/:id/enabled', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = SetPluginEnabledSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { ok: false, message: 'Invalid request', issues: parsed.error.issues },
+      400,
+    );
+  }
+  const result = await setPluginEnabled(id, parsed.data.enabled);
+  return c.json(result);
+});
+
+const SetPluginCredentialsSchema = z.object({
+  credentials: z.record(z.string(), z.string()).default({}),
+});
+
+adminApp.put('/plugins/:id/credentials', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = SetPluginCredentialsSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { ok: false, message: 'Invalid request', issues: parsed.error.issues },
+      400,
+    );
+  }
+  const result = await setPluginCredentials(id, parsed.data.credentials);
+  return c.json(result);
+});
+
+// ---------------------------------------------------------------------------
+// Preset security bundles - toggled within the default plugin modal.
+// ---------------------------------------------------------------------------
+
+const SetPluginPresetEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
+
+adminApp.put('/plugins/:pluginId/presets/:presetId', async (c) => {
+  const pluginId = c.req.param('pluginId');
+  const presetId = c.req.param('presetId');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = SetPluginPresetEnabledSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { ok: false, message: 'Invalid request', issues: parsed.error.issues },
+      400,
+    );
+  }
+  const result = await setPresetEnabled(pluginId, presetId, parsed.data.enabled);
+  return c.json(result);
 });
 
 export { adminApp };

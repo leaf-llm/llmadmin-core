@@ -1,183 +1,110 @@
-import { handler as defaultregexMatch } from './default/regexMatch';
-import { handler as defaultsentenceCount } from './default/sentenceCount';
-import { handler as defaultwordCount } from './default/wordCount';
-import { handler as defaultcharacterCount } from './default/characterCount';
-import { handler as defaultjsonSchema } from './default/jsonSchema';
-import { handler as defaultjsonKeys } from './default/jsonKeys';
-import { handler as defaultcontains } from './default/contains';
-import { handler as defaultvalidUrls } from './default/validUrls';
-import { handler as defaultwebhook } from './default/webhook';
-import { handler as defaultlog } from './default/log';
-import { handler as defaultcontainsCode } from './default/containsCode';
-import { handler as defaultalluppercase } from './default/alluppercase';
-import { handler as defaultalllowercase } from './default/alllowercase';
-import { handler as defaultendsWith } from './default/endsWith';
-import { handler as defaultmodelWhitelist } from './default/modelWhitelist';
-import { handler as defaultnotNull } from './default/notNull';
-import { handler as qualifireContentModeration } from './qualifire/contentModeration';
-import { handler as qualifireGrounding } from './qualifire/grounding';
-import { handler as qualifirePolicy } from './qualifire/policy';
-import { handler as qualifireToolUseQuality } from './qualifire/toolUseQuality';
-import { handler as qualifireHallucinations } from './qualifire/hallucinations';
-import { handler as qualifirePii } from './qualifire/pii';
-import { handler as qualifirePromptInjections } from './qualifire/promptInjections';
-import { handler as defaultaddPrefix } from './default/addPrefix';
-import { handler as defaultmodelRules } from './default/modelRules';
-import { handler as portkeymoderateContent } from './portkey/moderateContent';
-import { handler as portkeylanguage } from './portkey/language';
-import { handler as portkeypii } from './portkey/pii';
-import { handler as portkeygibberish } from './portkey/gibberish';
-import { handler as aporiavalidateProject } from './aporia/validateProject';
-import { handler as sydelabssydeguard } from './sydelabs/sydeguard';
-import { handler as pillarscanPrompt } from './pillar/scanPrompt';
-import { handler as pillarscanResponse } from './pillar/scanResponse';
-import { handler as patronusphi } from './patronus/phi';
-import { handler as patronuspii } from './patronus/pii';
-import { handler as patronusisConcise } from './patronus/isConcise';
-import { handler as patronusisHelpful } from './patronus/isHelpful';
-import { handler as patronusisPolite } from './patronus/isPolite';
-import { handler as patronusnoApologies } from './patronus/noApologies';
-import { handler as patronusnoGenderBias } from './patronus/noGenderBias';
-import { handler as patronusnoRacialBias } from './patronus/noRacialBias';
-import { handler as patronusretrievalAnswerRelevance } from './patronus/retrievalAnswerRelevance';
-import { handler as patronustoxicity } from './patronus/toxicity';
-import { handler as patronuscustom } from './patronus/custom';
-import { mistralGuardrailHandler } from './mistral';
-import { handler as pangeatextGuard } from './pangea/textGuard';
-import { handler as promptfooPii } from './promptfoo/pii';
-import { handler as promptfooHarm } from './promptfoo/harm';
-import { handler as promptfooGuard } from './promptfoo/guard';
-import { handler as pangeapii } from './pangea/pii';
-import { pluginHandler as bedrockHandler } from './bedrock/index';
-import { handler as acuvityScan } from './acuvity/scan';
-import { handler as lassoclassify } from './lasso/classify';
-import { handler as exaonline } from './exa/online';
-import { handler as azurePii } from './azure/pii';
-import { handler as azureContentSafety } from './azure/contentSafety';
-import { handler as promptSecurityProtectPrompt } from './promptsecurity/protectPrompt';
-import { handler as promptSecurityProtectResponse } from './promptsecurity/protectResponse';
-import { handler as panwPrismaAirsintercept } from './panw-prisma-airs/intercept';
-import { handler as defaultjwt } from './default/jwt';
-import { handler as defaultrequiredMetadataKeys } from './default/requiredMetadataKeys';
-import { handler as walledaiguardrails } from './walledai/walledprotect';
-import { handler as defaultregexReplace } from './default/regexReplace';
-import { handler as defaultallowedRequestTypes } from './default/allowedRequestTypes';
-import { handler as javelinguardrails } from './javelin/guardrails';
-import { handler as f5GuardrailsScan } from './f5-guardrails/scan';
-import { handler as azureShieldPrompt } from './azure/shieldPrompt';
-import { handler as azureProtectedMaterial } from './azure/protectedMaterial';
-import { handler as promptcachepromptCache } from './promptcache/promptCache';
+// Runtime plugin loader.
+//
+// This module replaces the previous build-time-generated registry. Handlers
+// are loaded lazily via dynamic `import()` and cached at module level. The
+// cache (and the manifest cache) is invalidated by `clearHandlerCache()` —
+// call this after mutating `conf.json → settings.plugins_enabled` so that the
+// next hook call reflects the new enabled set without a gateway restart.
+//
+// Idempotent: `getHandler('qualifire.pii')` returns the same function across
+// calls. A disabled plugin throws a clear error on the next access.
 
-export const plugins = {
-  default: {
-    regexMatch: defaultregexMatch,
-    sentenceCount: defaultsentenceCount,
-    wordCount: defaultwordCount,
-    characterCount: defaultcharacterCount,
-    jsonSchema: defaultjsonSchema,
-    jsonKeys: defaultjsonKeys,
-    contains: defaultcontains,
-    validUrls: defaultvalidUrls,
-    webhook: defaultwebhook,
-    log: defaultlog,
-    containsCode: defaultcontainsCode,
-    alluppercase: defaultalluppercase,
-    alllowercase: defaultalllowercase,
-    endsWith: defaultendsWith,
-    modelWhitelist: defaultmodelWhitelist,
-    modelRules: defaultmodelRules,
-    jwt: defaultjwt,
-    requiredMetadataKeys: defaultrequiredMetadataKeys,
-    addPrefix: defaultaddPrefix,
-    regexReplace: defaultregexReplace,
-    allowedRequestTypes: defaultallowedRequestTypes,
-    notNull: defaultnotNull,
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import type { PluginHandler } from './types';
+
+type Manifest = { enabled: Set<string>; functions: Record<string, string[]> };
+
+let manifestCache: Manifest | null = null;
+
+function loadManifests(): Manifest {
+  if (manifestCache) return manifestCache;
+
+  const confPath = resolve(process.cwd(), 'conf.json');
+  const conf = JSON.parse(readFileSync(confPath, 'utf-8')) as {
+    settings?: { plugins_enabled?: string[] };
+  };
+  const enabled = new Set(conf.settings?.plugins_enabled ?? []);
+
+  const functions: Record<string, string[]> = {};
+  for (const name of enabled) {
+    try {
+      const raw = readFileSync(
+        resolve(process.cwd(), 'plugins', name, 'manifest.json'),
+        'utf-8',
+      );
+      const manifest = JSON.parse(raw) as { functions?: { id: string }[] };
+      functions[name] = (manifest.functions ?? []).map((f) => f.id);
+    } catch {
+      functions[name] = [];
+    }
+  }
+
+  manifestCache = { enabled, functions };
+  return manifestCache;
+}
+
+const HANDLER_CACHE = new Map<string, PluginHandler>();
+
+function cacheKey(source: string, fn: string): string {
+  return `${source}.${fn}`;
+}
+
+/**
+ * Resolve a hook id (e.g. `"default.regexMatch"`) to its handler function.
+ * Throws if the plugin is not currently enabled (per `plugins_enabled`).
+ */
+export async function getHandler(id: string): Promise<PluginHandler> {
+  const { enabled } = loadManifests();
+  const [source, fn] = id.split('.');
+  if (!source || !fn) {
+    throw new Error(`Invalid plugin handler id: "${id}"`);
+  }
+  if (!enabled.has(source)) {
+    throw new Error(
+      `Plugin "${source}" is not enabled. Enable it in the Plugins admin page (no rebuild required).`,
+    );
+  }
+
+  const key = cacheKey(source, fn);
+  const cached = HANDLER_CACHE.get(key);
+  if (cached) return cached;
+
+  const mod = await import(`./${source}/${fn}`);
+  const handler = (mod.handler ?? mod.default) as PluginHandler;
+  if (typeof handler !== 'function') {
+    throw new Error(
+      `Plugin handler "${id}" did not export a function (got ${typeof handler})`,
+    );
+  }
+  HANDLER_CACHE.set(key, handler);
+  return handler;
+}
+
+/**
+ * Invalidate both the handler cache and the manifest cache. Call this after
+ * mutating `plugins_enabled` so subsequent `getHandler()` calls re-read disk
+ * and lazy-import newly enabled handlers.
+ */
+export function clearHandlerCache(): void {
+  HANDLER_CACHE.clear();
+  manifestCache = null;
+}
+
+/**
+ * Backwards-compatibility shim. The previous build-time-generated registry
+ * exported a `plugins` object; any code that still imports it gets a Proxy
+ * that throws on access, surfacing the migration clearly.
+ *
+ * New code MUST use `getHandler(id)` from this module.
+ */
+export const plugins = new Proxy(
+  {} as Record<string, Record<string, PluginHandler>>,
+  {
+    get() {
+      throw new Error(
+        'plugins registry is now runtime-dynamic. Use `getHandler(id)` from plugins/index.ts instead.',
+      );
+    },
   },
-  qualifire: {
-    contentModeration: qualifireContentModeration,
-    grounding: qualifireGrounding,
-    policy: qualifirePolicy,
-    toolUseQuality: qualifireToolUseQuality,
-    hallucinations: qualifireHallucinations,
-    pii: qualifirePii,
-    promptInjections: qualifirePromptInjections,
-  },
-  portkey: {
-    moderateContent: portkeymoderateContent,
-    language: portkeylanguage,
-    pii: portkeypii,
-    gibberish: portkeygibberish,
-  },
-  aporia: {
-    validateProject: aporiavalidateProject,
-  },
-  sydelabs: {
-    sydeguard: sydelabssydeguard,
-  },
-  pillar: {
-    scanPrompt: pillarscanPrompt,
-    scanResponse: pillarscanResponse,
-  },
-  patronus: {
-    phi: patronusphi,
-    pii: patronuspii,
-    isConcise: patronusisConcise,
-    isHelpful: patronusisHelpful,
-    isPolite: patronusisPolite,
-    noApologies: patronusnoApologies,
-    noGenderBias: patronusnoGenderBias,
-    noRacialBias: patronusnoRacialBias,
-    retrievalAnswerRelevance: patronusretrievalAnswerRelevance,
-    toxicity: patronustoxicity,
-    custom: patronuscustom,
-  },
-  mistral: {
-    moderateContent: mistralGuardrailHandler,
-  },
-  pangea: {
-    textGuard: pangeatextGuard,
-    pii: pangeapii,
-  },
-  promptfoo: {
-    pii: promptfooPii,
-    harm: promptfooHarm,
-    guard: promptfooGuard,
-  },
-  bedrock: {
-    guard: bedrockHandler,
-  },
-  acuvity: {
-    scan: acuvityScan,
-  },
-  lasso: {
-    classify: lassoclassify,
-  },
-  exa: {
-    online: exaonline,
-  },
-  azure: {
-    pii: azurePii,
-    contentSafety: azureContentSafety,
-    shieldPrompt: azureShieldPrompt,
-    protectedMaterial: azureProtectedMaterial,
-  },
-  promptsecurity: {
-    protectPrompt: promptSecurityProtectPrompt,
-    protectResponse: promptSecurityProtectResponse,
-  },
-  'panw-prisma-airs': {
-    intercept: panwPrismaAirsintercept,
-  },
-  walledai: {
-    walledprotect: walledaiguardrails,
-  },
-  javelin: {
-    guardrails: javelinguardrails,
-  },
-  'f5-guardrails': {
-    scan: f5GuardrailsScan,
-  },
-  promptcache: {
-    promptCache: promptcachepromptCache,
-  },
-};
+);
