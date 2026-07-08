@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'fs/promises';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
 
 import { loadSettings, saveSettings, type PluginCredentials } from './config/settingsStore';
 import { clearHandlerCache } from '../../plugins';
@@ -41,11 +41,22 @@ export type PluginSummary = {
 
 /**
  * Resolve the path to the plugins directory.
- * Assumes the server runs from the repo root (src-gateway/) — consistent with
- * configShared.ts which reads `./conf.json`.
+ *
+ * In dev mode (`bun run`) the CWD is src-gateway/ so `process.cwd() +
+ * 'plugins'` works. In desktop / compiled-binary mode the CWD is
+ * unpredictable, so we fall back to the directory of the running binary.
  */
 function pluginsDir(): string {
-  return resolve(process.cwd(), 'plugins');
+  // If CWD contains a `plugins` subdirectory, use it (dev mode).
+  const cwdPlugins = resolve(process.cwd(), 'plugins');
+  try {
+    // statSync is fine here — cheap, called once per request, blocks ok.
+    const { statSync } = require('fs');
+    if (statSync(cwdPlugins).isDirectory()) return cwdPlugins;
+  } catch { /* cwd has no plugins dir */ }
+
+  // Fall back to the binary's directory (compiled desktop mode).
+  return resolve(dirname(process.argv[0]), 'plugins');
 }
 
 /**
