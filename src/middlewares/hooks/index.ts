@@ -11,7 +11,7 @@ import {
   HandlerOptions,
   HookType,
 } from './types';
-import { plugins } from '../../../plugins';
+import { getHandler } from '../../../plugins';
 import { Context } from 'hono';
 import { HOOKS_EVENT_TYPE_PRESETS } from './globals';
 
@@ -201,10 +201,10 @@ export class HookSpan {
 
 export class HooksManager {
   private spans: Record<string, HookSpan> = {};
-  private plugins: any;
 
   constructor() {
-    this.plugins = plugins;
+    // Handlers are loaded lazily via getHandler() inside executeFunction().
+    // No eager plugin imports here — see plugins/index.ts.
   }
 
   public createSpan(
@@ -285,11 +285,11 @@ export class HooksManager {
     eventType: EventType,
     options: HandlerOptions
   ): Promise<GuardrailCheckResult> {
-    const [source, fn] = check.id.split('.');
     const createdAt = new Date();
     try {
-      const result = await this.plugins[source][fn](
-        context,
+      const handler = await getHandler(check.id);
+      const result = await handler(
+        context as unknown as Parameters<typeof handler>[0],
         check.parameters,
         eventType,
         options
@@ -297,7 +297,7 @@ export class HooksManager {
       return {
         transformedData: result.transformedData,
         data: result.data || null,
-        verdict: result.verdict,
+        verdict: result.verdict ?? false,
         id: check.id,
         error: result.error
           ? { name: result.error.name, message: result.error.message }
@@ -305,7 +305,7 @@ export class HooksManager {
         execution_time: new Date().getTime() - createdAt.getTime(),
         transformed: result.transformed || false,
         created_at: createdAt,
-        log: result.log || null,
+        log: (result as { log?: unknown }).log ?? null,
         fail_on_error:
           (check.parameters as Record<string, any>)?.failOnError || false,
       };

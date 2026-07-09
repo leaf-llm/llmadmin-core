@@ -12,6 +12,27 @@ import { HEADER_KEYS, RETRY_STATUS_CODES } from '../../globals';
 import { HookObject } from '../../middlewares/hooks/types';
 import { HooksManager } from '../../middlewares/hooks';
 import { transformToProviderRequest } from '../../services/transformToProviderRequest';
+import { getConfig } from '../../configShared';
+
+/**
+ * Sync helper: read `settings.default_hooks` from the in-memory cached
+ * conf.json (populated by `loadConfig()` at gateway startup). Returns only
+ * the hooks matching the requested event type.
+ *
+ * These are the hooks injected by the preset security bundles UI. They
+ * apply to every provider's requests. Provider-level hooks (set in
+ * `gateway.providers.<name>[].beforeRequestHooks`) run AFTER these, so
+ * provider-level config wins on conflicting deny decisions.
+ */
+function getDefaultHooksFor(
+  eventType: 'beforeRequestHook' | 'afterRequestHook',
+): HookObject[] {
+  const conf = getConfig() as
+    | { settings?: { default_hooks?: HookObject[] } }
+    | null;
+  if (!conf?.settings?.default_hooks) return [];
+  return conf.settings.default_hooks.filter((h) => h.eventType === eventType);
+}
 
 export class RequestContext {
   private _params: Params | null = null;
@@ -187,6 +208,7 @@ export class RequestContext {
 
   get beforeRequestHooks(): HookObject[] {
     return [
+      ...getDefaultHooksFor('beforeRequestHook'),
       ...(this.providerOption?.beforeRequestHooks || []),
       ...(this.providerOption?.defaultInputGuardrails || []),
     ];
@@ -194,6 +216,7 @@ export class RequestContext {
 
   get afterRequestHooks(): HookObject[] {
     return [
+      ...getDefaultHooksFor('afterRequestHook'),
       ...(this.providerOption?.afterRequestHooks || []),
       ...(this.providerOption?.defaultOutputGuardrails || []),
     ];

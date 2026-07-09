@@ -19,7 +19,6 @@
     "dev:workerd": "wrangler dev src/index.ts",
     "deploy": "wrangler deploy --minify src/index.ts",
     "build": "rollup -c",
-    "build-plugins": "tsx plugins/build.ts",
     "format": "prettier --write \"./**/*.{js,jsx,ts,tsx,json}\"",
     "format:check": "prettier --check \"./**/*.{js,jsx,ts,tsx,json}\"",
     "test:gateway": "jest src/",
