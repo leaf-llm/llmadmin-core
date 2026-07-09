@@ -100,4 +100,9 @@ export async function saveSettings(settings: Settings): Promise<void> {
 
   parsed.settings = settings;
   await writeFile(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
+
+  // Refresh the in-memory config cache so synchronous readers
+  // (requestContext.getDefaultHooksFor, plugins/index.ts loadEnabled)
+  // see updated settings immediately - no restart required.
+  await loadConfig();
 }

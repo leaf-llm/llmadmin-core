@@ -1,6 +1,3 @@
-import { readdir, readFile, stat } from 'fs/promises';
-import { resolve, dirname } from 'path';
-
 import { loadSettings, saveSettings, type PluginCredentials } from './config/settingsStore';
 import { clearHandlerCache } from '../../plugins';
 import {
@@ -9,6 +6,14 @@ import {
   listPresetsWithState,
   type PresetDefinition,
 } from '../../plugins/presets-shared';
+
+// Static imports of plugin manifests and presets modules. Plugins are
+// compiled into the gateway binary at build time (see plugins/index.ts) - no
+// plugin source files are read from disk at runtime.
+import defaultManifest from '../../plugins/default/manifest.json';
+import promptcacheManifest from '../../plugins/promptcache/manifest.json';
+import { PRESETS as defaultPresets } from '../../plugins/default/presets';
+import { PRESETS as promptcachePresets } from '../../plugins/promptcache/presets';
 
 // ---------------------------------------------------------------------------
 // Types exposed to the admin endpoint
@@ -36,28 +41,42 @@ export type PluginSummary = {
 };
 
 // ---------------------------------------------------------------------------
+// Static plugin registry
+// ---------------------------------------------------------------------------
+
+type PluginFolder = {
+  id: string;
+  manifest: Record<string, unknown>;
+  presets: PresetDefinition[] | null; // null = plugin has no presets module
+};
+
+/**
+ * Fixed set of plugins compiled into the binary. No disk discovery - the
+ * plugin count is fixed by design (matches the UI whitelist in
+ * PluginsPage.tsx). Adding a new plugin requires editing this array AND
+ * the static imports at the top of plugins/index.ts.
+ */
+const PLUGIN_FOLDERS: PluginFolder[] = [
+  { id: 'default', manifest: defaultManifest as unknown as Record<string, unknown>, presets: defaultPresets },
+  { id: 'promptcache', manifest: promptcacheManifest as unknown as Record<string, unknown>, presets: promptcachePresets },
+];
+
+/**
+ * Static lookup replacing the previous dynamic `import('../../plugins/${id}/presets')`.
+ * Returns the preset definitions for a plugin, or null if the plugin has no
+ * presets module. Never throws.
+ */
+function getPresetModule(id: string): PresetDefinition[] | null {
+  for (const f of PLUGIN_FOLDERS) {
+    if (f.id === id) return f.presets;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the path to the plugins directory.
- *
- * In dev mode (`bun run`) the CWD is src-gateway/ so `process.cwd() +
- * 'plugins'` works. In desktop / compiled-binary mode the CWD is
- * unpredictable, so we fall back to the directory of the running binary.
- */
-function pluginsDir(): string {
-  // If CWD contains a `plugins` subdirectory, use it (dev mode).
-  const cwdPlugins = resolve(process.cwd(), 'plugins');
-  try {
-    // statSync is fine here — cheap, called once per request, blocks ok.
-    const { statSync } = require('fs');
-    if (statSync(cwdPlugins).isDirectory()) return cwdPlugins;
-  } catch { /* cwd has no plugins dir */ }
-
-  // Fall back to the binary's directory (compiled desktop mode).
-  return resolve(dirname(process.argv[0]), 'plugins');
-}
 
 /**
  * Flatten a polymorphic description field (string | array of {type,text} objects)
@@ -126,16 +145,6 @@ function pluginType(functions: PluginFunctionSummary[]): 'guardrail' | 'transfor
  * state from conf.json.
  */
 export async function listPlugins(): Promise<PluginSummary[]> {
-  const dir = pluginsDir();
-
-  let entries: string[];
-  try {
-    entries = await readdir(dir, { withFileTypes: false });
-  } catch {
-    // plugins directory does not exist — return empty list
-    return [];
-  }
-
   const settings = await loadSettings();
 
   // Lazy-init: if an enabled plugin has never had its presets initialised,
@@ -150,19 +159,17 @@ export async function listPlugins(): Promise<PluginSummary[]> {
       settings.presets_enabled = settings.presets_enabled ?? {};
       settings.presets_enabled[pluginId] = [...defaults];
       changed = true;
-      try {
-        const mod = await import(`../../plugins/${pluginId}/presets`);
+      const presets = getPresetModule(pluginId);
+      if (presets) {
         let hooks = settings.default_hooks ?? [];
         for (const presetId of defaults) {
-          const preset = mod.PRESETS.find((p: PresetDefinition) => p.id === presetId);
+          const preset = presets.find((p: PresetDefinition) => p.id === presetId);
           if (preset) {
             hooks = stripPresetFromHooks(hooks, presetId);
             hooks = [...hooks, ...buildHooksForPreset(preset)];
           }
         }
         settings.default_hooks = hooks;
-      } catch {
-        // plugin has no presets module — shouldn't happen
       }
     }
     if (changed) await saveSettings(settings);
@@ -173,27 +180,9 @@ export async function listPlugins(): Promise<PluginSummary[]> {
 
   const results: PluginSummary[] = [];
 
-  for (const name of entries) {
-    // Skip non-directories and hidden files
-    if (name.startsWith('.') || name === 'node_modules') continue;
-
-    const manifestPath = resolve(dir, name, 'manifest.json');
-    let manifestStat;
-    try {
-      manifestStat = await stat(manifestPath);
-    } catch {
-      continue; // no manifest.json in this folder
-    }
-    if (!manifestStat.isFile()) continue;
-
-    let manifest: Record<string, unknown>;
-    try {
-      const raw = await readFile(manifestPath, 'utf-8');
-      manifest = JSON.parse(raw);
-    } catch {
-      continue; // invalid JSON
-    }
-
+  for (const folder of PLUGIN_FOLDERS) {
+    const name = folder.id;
+    const manifest = folder.manifest;
     const enabled = enabledSet.has(name);
     const currentCredentials = allCredentials[name];
 
@@ -213,16 +202,10 @@ export async function listPlugins(): Promise<PluginSummary[]> {
 
     const creds = analyseCredentials(manifest.credentials, currentCredentials);
 
-    // Dynamically load per-plugin presets if the plugin has a presets.ts
-    let pluginPresets: Array<PresetDefinition & { enabled: boolean }> | null = null;
-    try {
-      const mod = await import(`../../plugins/${name}/presets`);
-      if (mod.PRESETS) {
-        pluginPresets = listPresetsWithState(mod.PRESETS, settings.presets_enabled?.[name]);
-      }
-    } catch {
-      // plugin has no presets.ts — that's fine
-    }
+    // Per-plugin presets come from the static PLUGIN_FOLDERS entry
+    const pluginPresets = folder.presets
+      ? listPresetsWithState(folder.presets, settings.presets_enabled?.[name])
+      : null;
 
     results.push({
       id: name,
@@ -254,7 +237,7 @@ export async function listPlugins(): Promise<PluginSummary[]> {
  */
 /** Presets auto-enabled the first time each plugin is activated. */
 const PLUGIN_DEFAULT_PRESETS: Record<string, string[]> = {
-  default: ['pii_detection', 'prompt_injection', 'url_safety'],
+  default: ['pii_detection', 'prompt_injection', 'url_safety_blacklist', 'url_safety_ssrf'],
   promptcache: ['system_prompt_cache'],
 };
 
@@ -283,19 +266,17 @@ export async function setPluginEnabled(
       }
     }
     if (enabledPresetIds && enabledPresetIds.length > 0) {
-      try {
-        const mod = await import(`../../plugins/${id}/presets`);
+      const presets = getPresetModule(id);
+      if (presets) {
         let hooks = settings.default_hooks ?? [];
         for (const presetId of enabledPresetIds) {
-          const preset = mod.PRESETS.find((p: PresetDefinition) => p.id === presetId);
+          const preset = presets.find((p: PresetDefinition) => p.id === presetId);
           if (preset) {
             hooks = stripPresetFromHooks(hooks, presetId);
             hooks = [...hooks, ...buildHooksForPreset(preset)];
           }
         }
         settings.default_hooks = hooks;
-      } catch {
-        // Plugin has no presets module — nothing to restore
       }
     }
   } else {
@@ -348,13 +329,11 @@ export async function setPresetEnabled(
   presetId: string,
   enabled: boolean,
 ): Promise<{ ok: boolean; defaultPluginEnabled: boolean }> {
-  let mod: { PRESETS: PresetDefinition[] };
-  try {
-    mod = await import(`../../plugins/${pluginId}/presets`);
-  } catch {
+  const presets = getPresetModule(pluginId);
+  if (!presets) {
     throw new Error(`Plugin "${pluginId}" has no presets`);
   }
-  const preset = mod.PRESETS.find((p) => p.id === presetId);
+  const preset = presets.find((p) => p.id === presetId);
   if (!preset) {
     throw new Error(`Unknown preset: ${presetId}`);
   }

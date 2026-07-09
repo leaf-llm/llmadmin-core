@@ -17,27 +17,54 @@ export const PRESETS: PresetDefinition[] = [
     id: 'pii_detection',
     name: 'PII Detection',
     description:
-      'Detects email addresses, phone numbers (CN), ID card numbers, credit card numbers, and SSN-like patterns in requests. Requests containing PII are denied.',
+      'Detects email addresses, phone numbers (CN), ID card numbers, credit card numbers, and common API keys in requests. Detected values are masked (replaced with a placeholder) before forwarding; the request is allowed through.',
     i18nKey: 'plugins.presets.pii_detection',
     eventType: 'beforeRequestHook',
-    deny: true,
+    deny: false,
     checks: [
       // Email
       {
-        id: 'default.regexMatch',
+        id: 'default.regexReplace',
         parameters: {
           rule: '\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b',
-          not: false,
+          redactText: '[EMAIL REDACTED]',
         },
       },
       // CN mobile
-      { id: 'default.regexMatch', parameters: { rule: '\\b1[3-9]\\d{9}\\b', not: false } },
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule: '\\b1[3-9]\\d{9}\\b',
+          redactText: '[PHONE REDACTED]',
+        },
+      },
       // CN ID card (18 digits, last may be X)
-      { id: 'default.regexMatch', parameters: { rule: '\\b\\d{17}[\\dXx]\\b', not: false } },
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule: '\\b\\d{17}[\\dXx]\\b',
+          redactText: '[ID_CARD REDACTED]',
+        },
+      },
       // Credit card (16 digits)
-      { id: 'default.regexMatch', parameters: { rule: '\\b(?:\\d[ -]*){13,16}\\b', not: false } },
-      // SSN-like (US)
-      { id: 'default.regexMatch', parameters: { rule: '\\b\\d{3}-\\d{2}-\\d{4}\\b', not: false } },
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule: '\\b(?:\\d[ -]*){13,16}\\b',
+          redactText: '[CARD REDACTED]',
+        },
+      },
+      // API keys: OpenAI sk-/sk-ant-, Stripe pk_/sk_/rk_, Google AIza,
+      // GitHub ghp_/gho_/ghu_/ghs_/ghr_, AWS AKIA/ASIA, Slack xox[baprs]-,
+      // Hugging Face hf_, Replicate r8_, Groq gsk_
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule:
+            '\\b(?:sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|pk_(?:live|test)_[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|rk_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{20,}|r8_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,})\\b',
+          redactText: '[API_KEY REDACTED]',
+        },
+      },
     ],
   },
   {
@@ -70,20 +97,135 @@ export const PRESETS: PresetDefinition[] = [
             'print your instructions',
             'show me your prompt',
           ],
-          operator: 'or',
+          operator: 'none',
         },
       },
     ],
   },
   {
-    id: 'url_safety',
-    name: 'URL Safety',
+    id: 'url_safety_ssrf',
+    name: 'SSRF Guard',
     description:
-      'Validates that any URL in the request resolves to a real DNS record. Mitigates SSRF and phishing-link injection. Does not deny - logs only.',
-    i18nKey: 'plugins.presets.url_safety',
+      'Detects URLs that point to internal/private network ranges (loopback, link-local, private IPv4, cloud metadata IP, IPv6 loopback / ULA). These typically indicate an SSRF or prompt-injection attempt to make the upstream LLM reach internal services. The request is denied if any such URL is found.',
+    i18nKey: 'plugins.presets.url_safety_ssrf',
+    eventType: 'beforeRequestHook',
+    deny: true,
+    checks: [
+      // Private / loopback hostnames
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule:
+            '\\bhttps?://(?:localhost|ip6-localhost|ip6-loopback|0\\.0\\.0\\.0|broadcasthost)\\b',
+          not: false,
+        },
+      },
+      // IPv4 loopback 127.0.0.0/8
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule: '\\bhttps?://127\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b',
+          not: false,
+        },
+      },
+      // Private IPv4 10.0.0.0/8
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule:
+            '\\bhttps?://10\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b',
+          not: false,
+        },
+      },
+      // Private IPv4 172.16.0.0/12
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule:
+            '\\bhttps?://172\\.(?:1[6-9]|2[0-9]|3[01])\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b',
+          not: false,
+        },
+      },
+      // Private IPv4 192.168.0.0/16
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule:
+            '\\bhttps?://192\\.168\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b',
+          not: false,
+        },
+      },
+      // Link-local 169.254.0.0/16 (includes AWS/GCP/Azure metadata 169.254.169.254)
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule:
+            '\\bhttps?://169\\.254\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b',
+          not: false,
+        },
+      },
+      // IPv4 unspecified 0.0.0.0
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule: '\\bhttps?://0\\.0\\.0\\.0\\b',
+          not: false,
+        },
+      },
+      // IPv6 loopback ::1
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule: '\\bhttps?://\\[?::1\\]?\\b',
+          not: false,
+        },
+      },
+      // IPv6 link-local fe80::/10
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule: '\\bhttps?://\\[?fe80:[0-9a-fA-F:]+(\\b|\\]/?)',
+          not: false,
+        },
+      },
+      // IPv6 unique-local fc00::/7
+      {
+        id: 'default.regexMatch',
+        parameters: {
+          rule: '\\bhttps?://\\[?[fF][cdCD][0-9a-fA-F:]+(\\b|\\]/?)',
+          not: false,
+        },
+      },
+    ],
+  },
+  {
+    id: 'url_safety_blacklist',
+    name: 'URL Blacklist',
+    description:
+      'Detects common URL-shortener services (bit.ly, tinyurl.com, t.co, etc.) and known high-risk TLDs (.xyz, .top, .click, .tk, .ml, etc.) in the request. Matched URLs are masked (replaced with a placeholder) before forwarding; the request is allowed through.',
+    i18nKey: 'plugins.presets.url_safety_blacklist',
     eventType: 'beforeRequestHook',
     deny: false,
-    checks: [{ id: 'default.validUrls', parameters: { onlyDNS: false, not: false } }],
+    checks: [
+      // URL shorteners and link-masking services
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule:
+            '\\bhttps?://(?:[a-z0-9-]+\\.)?(?:bit\\.ly|tinyurl\\.com|t\\.co|goo\\.gl|ow\\.ly|is\\.gd|buff\\.ly|adf\\.ly|cutt\\.ly|rebrand\\.ly|shorturl\\.at|tiny\\.cc|rb\\.gy|v\\.gd|lnkd\\.in|trib\\.al|soo\\.gd|qr\\.ae|shorte\\.st|clck\\.ru|tr\\.im|shorturl\\.com|mcaf\\.ee|po\\.st|1url\\.com|x\\.co|youtu\\.be)\\b[^\\s]*',
+          redactText: '[SHORT_URL REDACTED]',
+        },
+      },
+      // High-risk / commonly-abused TLDs
+      {
+        id: 'default.regexReplace',
+        parameters: {
+          rule:
+            '\\bhttps?://[a-z0-9.-]+\\.(?:xyz|top|click|tk|ml|cf|gq|loan|work|review|country|stream|download|men|cyou|rest|monster|zip|mom|wang|win|bid|date|trade|racing|account|faith|host|press|cc|ws|su|icu|fun|app|dev|ovh|art|biz|info|name|pro|pw|red|loan)(?:[/?#][^\\s]*)?',
+          redactText: '[RISKY_TLD REDACTED]',
+        },
+      },
+    ],
   },
   {
     id: 'content_moderation',
@@ -110,7 +252,7 @@ export const PRESETS: PresetDefinition[] = [
             'whore',
             'slut',
           ],
-          operator: 'or',
+          operator: 'none',
         },
       },
     ],

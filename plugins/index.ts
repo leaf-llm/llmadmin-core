@@ -1,94 +1,131 @@
-// Runtime plugin loader.
+// Static plugin handler registry.
 //
-// This module replaces the previous build-time-generated registry. Handlers
-// are loaded lazily via dynamic `import()` and cached at module level. The
-// cache (and the manifest cache) is invalidated by `clearHandlerCache()` —
-// call this after mutating `conf.json → settings.plugins_enabled` so that the
-// next hook call reflects the new enabled set without a gateway restart.
+// All plugin handlers are statically imported at build time so `bun build
+// --compile` bundles them into a single self-contained binary. No plugin
+// source files need to be shipped on disk next to the binary.
 //
-// Idempotent: `getHandler('qualifire.pii')` returns the same function across
-// calls. A disabled plugin throws a clear error on the next access.
+// Enable/disable is still runtime-toggleable via `conf.json -> settings.
+// plugins_enabled` (no restart required): `getHandler(id)` consults an
+// in-memory enabled-set cache that is refreshed whenever the config is
+// reloaded (see `clearHandlerCache()` + `settingsStore.saveSettings()`).
+//
+// Idempotent: `getHandler('default.regexMatch')` returns the same function
+// across calls. A disabled plugin throws a clear error on the next access.
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
 import type { PluginHandler } from './types';
+import { getConfig } from '../src/configShared';
 
-type Manifest = { enabled: Set<string>; functions: Record<string, string[]> };
+// ---------------------------------------------------------------------------
+// Static handler imports (default plugin)
+// ---------------------------------------------------------------------------
+import { handler as default_addPrefix } from './default/addPrefix';
+import { handler as default_alllowercase } from './default/alllowercase';
+import { handler as default_allowedRequestTypes } from './default/allowedRequestTypes';
+import { handler as default_alluppercase } from './default/alluppercase';
+import { handler as default_characterCount } from './default/characterCount';
+import { handler as default_containsCode } from './default/containsCode';
+import { handler as default_contains } from './default/contains';
+import { handler as default_endsWith } from './default/endsWith';
+import { handler as default_jsonKeys } from './default/jsonKeys';
+import { handler as default_jsonSchema } from './default/jsonSchema';
+import { handler as default_jwt } from './default/jwt';
+import { handler as default_log } from './default/log';
+import { handler as default_modelRules } from './default/modelRules';
+// manifest `functions[].id` is the lowercase string "modelwhitelist" but the
+// source file is camelCase `modelWhitelist.ts` - the KEY below uses the
+// manifest id so it matches the check.id produced by presets/handlers.
+import { handler as default_modelWhitelist } from './default/modelWhitelist';
+import { handler as default_notNull } from './default/notNull';
+import { handler as default_regexMatch } from './default/regexMatch';
+// regexReplace is not in the default manifest but is imported for static
+// reachability (tests may reference it directly).
+import { handler as default_regexReplace } from './default/regexReplace';
+import { handler as default_requiredMetadataKeys } from './default/requiredMetadataKeys';
+import { handler as default_sentenceCount } from './default/sentenceCount';
+import { handler as default_validUrls } from './default/validUrls';
+import { handler as default_webhook } from './default/webhook';
+import { handler as default_wordCount } from './default/wordCount';
 
-let manifestCache: Manifest | null = null;
+// ---------------------------------------------------------------------------
+// Static handler imports (promptcache plugin)
+// ---------------------------------------------------------------------------
+import { handler as promptcache_promptCache } from './promptcache/promptCache';
 
-function loadManifests(): Manifest {
-  if (manifestCache) return manifestCache;
+// ---------------------------------------------------------------------------
+// Static registry - keyed by `<pluginId>.<functionId>` (e.g. "default.regexMatch")
+// ---------------------------------------------------------------------------
+const HANDLERS: Record<string, PluginHandler> = {
+  'default.addPrefix': default_addPrefix,
+  'default.alllowercase': default_alllowercase,
+  'default.allowedRequestTypes': default_allowedRequestTypes,
+  'default.alluppercase': default_alluppercase,
+  'default.characterCount': default_characterCount,
+  'default.containsCode': default_containsCode,
+  'default.contains': default_contains,
+  'default.endsWith': default_endsWith,
+  'default.jsonKeys': default_jsonKeys,
+  'default.jsonSchema': default_jsonSchema,
+  'default.jwt': default_jwt,
+  'default.log': default_log,
+  'default.modelRules': default_modelRules,
+  'default.modelwhitelist': default_modelWhitelist,
+  'default.notNull': default_notNull,
+  'default.regexMatch': default_regexMatch,
+  'default.regexReplace': default_regexReplace,
+  'default.requiredMetadataKeys': default_requiredMetadataKeys,
+  'default.sentenceCount': default_sentenceCount,
+  'default.validUrls': default_validUrls,
+  'default.webhook': default_webhook,
+  'default.wordCount': default_wordCount,
+  'promptcache.promptCache': promptcache_promptCache,
+};
 
-  const confPath = resolve(process.cwd(), 'conf.json');
-  const conf = JSON.parse(readFileSync(confPath, 'utf-8')) as {
-    settings?: { plugins_enabled?: string[] };
-  };
-  const enabled = new Set(conf.settings?.plugins_enabled ?? []);
+/**
+ * Cached enabled-set, rebuilt lazily from the in-memory conf.json cache.
+ * Invalidated by `clearHandlerCache()` after a plugin toggle.
+ */
+let enabledSet: Set<string> | null = null;
 
-  const functions: Record<string, string[]> = {};
-  for (const name of enabled) {
-    try {
-      const raw = readFileSync(
-        resolve(process.cwd(), 'plugins', name, 'manifest.json'),
-        'utf-8',
-      );
-      const manifest = JSON.parse(raw) as { functions?: { id: string }[] };
-      functions[name] = (manifest.functions ?? []).map((f) => f.id);
-    } catch {
-      functions[name] = [];
-    }
-  }
-
-  manifestCache = { enabled, functions };
-  return manifestCache;
-}
-
-const HANDLER_CACHE = new Map<string, PluginHandler>();
-
-function cacheKey(source: string, fn: string): string {
-  return `${source}.${fn}`;
+function loadEnabled(): Set<string> {
+  if (enabledSet) return enabledSet;
+  const conf = getConfig() as
+    | { settings?: { plugins_enabled?: string[] } }
+    | null;
+  enabledSet = new Set(conf?.settings?.plugins_enabled ?? []);
+  return enabledSet;
 }
 
 /**
  * Resolve a hook id (e.g. `"default.regexMatch"`) to its handler function.
+ * Synchronous - handlers are statically imported at build time.
  * Throws if the plugin is not currently enabled (per `plugins_enabled`).
  */
-export async function getHandler(id: string): Promise<PluginHandler> {
-  const { enabled } = loadManifests();
+export function getHandler(id: string): PluginHandler {
   const [source, fn] = id.split('.');
   if (!source || !fn) {
     throw new Error(`Invalid plugin handler id: "${id}"`);
   }
-  if (!enabled.has(source)) {
+  if (!loadEnabled().has(source)) {
     throw new Error(
       `Plugin "${source}" is not enabled. Enable it in the Plugins admin page (no rebuild required).`,
     );
   }
-
-  const key = cacheKey(source, fn);
-  const cached = HANDLER_CACHE.get(key);
-  if (cached) return cached;
-
-  const mod = await import(`./${source}/${fn}`);
-  const handler = (mod.handler ?? mod.default) as PluginHandler;
+  const handler = HANDLERS[id];
   if (typeof handler !== 'function') {
     throw new Error(
-      `Plugin handler "${id}" did not export a function (got ${typeof handler})`,
+      `Plugin handler "${id}" is not registered (not compiled into this binary).`,
     );
   }
-  HANDLER_CACHE.set(key, handler);
   return handler;
 }
 
 /**
- * Invalidate both the handler cache and the manifest cache. Call this after
- * mutating `plugins_enabled` so subsequent `getHandler()` calls re-read disk
- * and lazy-import newly enabled handlers.
+ * Invalidate the cached enabled-set. Call this after mutating
+ * `plugins_enabled` so the next `getHandler()` re-reads the enabled set.
+ * (Handlers themselves are static - nothing to clear.)
  */
 export function clearHandlerCache(): void {
-  HANDLER_CACHE.clear();
-  manifestCache = null;
+  enabledSet = null;
 }
 
 /**
@@ -103,7 +140,7 @@ export const plugins = new Proxy(
   {
     get() {
       throw new Error(
-        'plugins registry is now runtime-dynamic. Use `getHandler(id)` from plugins/index.ts instead.',
+        'plugins registry is now static. Use `getHandler(id)` from plugins/index.ts instead.',
       );
     },
   },
