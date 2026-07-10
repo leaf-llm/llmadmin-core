@@ -52,6 +52,11 @@ import { handler as default_wordCount } from './default/wordCount';
 import { handler as promptcache_promptCache } from './promptcache/promptCache';
 
 // ---------------------------------------------------------------------------
+// Static handler imports (claude-stego-detector plugin)
+// ---------------------------------------------------------------------------
+import { handler as claudeStegoDetector_anthropicStegoDetector } from './claude-stego-detector/anthropicStegoDetector';
+
+// ---------------------------------------------------------------------------
 // Static registry - keyed by `<pluginId>.<functionId>` (e.g. "default.regexMatch")
 // ---------------------------------------------------------------------------
 const HANDLERS: Record<string, PluginHandler> = {
@@ -78,6 +83,7 @@ const HANDLERS: Record<string, PluginHandler> = {
   'default.webhook': default_webhook,
   'default.wordCount': default_wordCount,
   'promptcache.promptCache': promptcache_promptCache,
+  'claude-stego-detector.anthropicStegoDetector': claudeStegoDetector_anthropicStegoDetector,
 };
 
 /**

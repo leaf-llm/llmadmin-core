@@ -192,6 +192,14 @@ export async function responseHandler(
   };
 }
 
+function filterHooks(hooks: any[] | undefined): any[] | undefined {
+  if (!hooks || hooks.length === 0) return undefined;
+  const filtered = hooks.filter(
+    (h: any) => h.transformed === true || h.verdict === false
+  );
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 function createHookResponse(
   baseResponse: Response,
   responseData: any,
@@ -203,6 +211,9 @@ function createHookResponse(
     headers?: Record<string, string>;
   } = {}
 ) {
+  const beforeHooks = filterHooks(hooksResult.beforeRequestHooksResult);
+  const afterHooks = filterHooks(hooksResult.afterRequestHooksResult);
+
   const responseBody = {
     ...(options.forceError
       ? {
@@ -215,11 +226,10 @@ function createHookResponse(
           },
         }
       : responseData),
-    ...((hooksResult.beforeRequestHooksResult?.length ||
-      hooksResult.afterRequestHooksResult?.length) && {
+    ...((beforeHooks || afterHooks) && {
       hook_results: {
-        before_request_hooks: hooksResult.beforeRequestHooksResult,
-        after_request_hooks: hooksResult.afterRequestHooksResult,
+        ...(beforeHooks && { before_request_hooks: beforeHooks }),
+        ...(afterHooks && { after_request_hooks: afterHooks }),
       },
     }),
   };

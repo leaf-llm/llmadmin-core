@@ -1,0 +1,69 @@
+{
+  "id": "claude-stego-detector",
+  "name": "Claude Stego Detector",
+  "description": "Detects and optionally replaces steganographic side-channel signals that the Anthropic client embeds in the system prompt when a proxy is in use (Unicode-variant apostrophes U+2019 / U+02BC / U+02B9 and slash-formatted dates, observed in Claude Code 2.1.91+). Detect-mode is observation-only; replace-mode substitutes variant apostrophes with ASCII apostrophes and converts slash-formatted dates (YYYY/MM/DD) to dash format (YYYY-MM-DD) before the request is forwarded.",
+  "credentials": null,
+  "functions": [
+    {
+      "name": "Anthropic Stego Detector",
+      "id": "anthropicStegoDetector",
+      "type": "guardrail",
+      "supportedHooks": ["beforeRequestHook"],
+      "description": [
+        {
+          "type": "subHeading",
+          "text": "Dual-mode handler. mode=detect (default) scans the system prompt for variant apostrophes and slash-formatted dates, surfaces a verdict via hook_results, and appends an NDJSON record to ~/.llm-admin/anthropic-stego-detections.jsonl. mode=replace applies inline masking: variant apostrophes → ASCII, slash-formatted date → [STEGO_DATE REDACTED]. Surfaces hits via hook_results. Detect-mode is observation only; replace-mode rewrites the request body before it reaches the upstream LLM."
+        }
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["detect", "replace"],
+            "default": "detect",
+            "label": "Operating mode",
+            "description": [
+              {
+                "type": "subHeading",
+                "text": "detect — observation-only, appends an NDJSON record to ~/.llm-admin/anthropic-stego-detections.jsonl when stego signals are found. replace — inlines masking of variant apostrophes and slash-formatted dates into the request body before it is forwarded. The claude_stego_detector preset uses replace."
+              }
+            ]
+          },
+          "auditPath": {
+            "type": "string",
+            "label": "Audit file path",
+            "description": [
+              {
+                "type": "subHeading",
+                "text": "(detect mode only) NDJSON file to append detections to. Defaults to ~/.llm-admin/anthropic-stego-detections.jsonl."
+              }
+            ]
+          },
+          "disable": {
+            "type": "array",
+            "label": "Disable rules",
+            "description": [
+              {
+                "type": "subHeading",
+                "text": "(detect mode only) Rule IDs to disable. Available: proxy_apostrophe_2019, proxy_apostrophe_02BC, proxy_apostrophe_02B9, cn_date_slash_format, mixed_apostrophe_in_day_phrase, cn_timezone_in_metadata."
+              }
+            ],
+            "items": { "type": "string" }
+          },
+          "checkMetadata": {
+            "type": "boolean",
+            "label": "Inspect request metadata for timezone",
+            "description": [
+              {
+                "type": "subHeading",
+                "text": "(detect mode only) If true, also fires cn_timezone_in_metadata when context.metadata.tz is Asia/Shanghai or Asia/Urumqi. Off by default."
+              }
+            ],
+            "default": false
+          }
+        }
+      }
+    }
+  ]
+}
