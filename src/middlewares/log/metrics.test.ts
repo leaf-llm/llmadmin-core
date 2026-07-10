@@ -399,3 +399,123 @@ describe('recordMetrics Anthropic OpenAI-shaped payload', () => {
   });
 });
 
+describe('recordMetrics fallback attribution', () => {
+  // Regression: previously, requestOptionsArray[0] (the primary target) was
+  // always credited regardless of which target in the fallback chain actually
+  // served the response. The fix uses responseStatus stamped onto each
+  // attempt's log entry to attribute to the last 2xx (or, on total failure,
+  // the last attempt).
+
+  test('attributes success and tokens to the last 2xx attempt in a fallback chain', () => {
+    recordMetrics(200, [
+      {
+        providerOptions: { provider: 'primary', requestURL: 'http://primary' },
+        requestParams: {},
+        responseStatus: 500,
+        response: {
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        },
+      } as any,
+      {
+        providerOptions: { provider: 'fallback', requestURL: 'http://fallback' },
+        requestParams: {},
+        responseStatus: 200,
+        response: {
+          usage: { prompt_tokens: 100, completion_tokens: 50 },
+        },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const primary = metricsStore.get(today)?.get('primary');
+    const fallback = metricsStore.get(today)?.get('fallback');
+
+    expect(fallback).toBeDefined();
+    expect(fallback!.total).toBe(1);
+    expect(fallback!.success).toBe(1);
+    expect(fallback!.failure).toBe(0);
+    expect(fallback!.inputTokens).toBe(100);
+    expect(fallback!.outputTokens).toBe(50);
+
+    // Primary must NOT be touched on this request, even though it was the
+    // first entry in the array.
+    expect(primary).toBeUndefined();
+  });
+
+  test('attributes failure to the last attempt when every fallback fails', () => {
+    recordMetrics(503, [
+      {
+        providerOptions: { provider: 'primary', requestURL: 'http://primary' },
+        requestParams: {},
+        responseStatus: 500,
+        response: { error: 'primary down' },
+      } as any,
+      {
+        providerOptions: { provider: 'fallback', requestURL: 'http://fallback' },
+        requestParams: {},
+        responseStatus: 503,
+        response: { error: 'fallback down' },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const primary = metricsStore.get(today)?.get('primary');
+    const fallback = metricsStore.get(today)?.get('fallback');
+
+    expect(fallback).toBeDefined();
+    expect(fallback!.total).toBe(1);
+    expect(fallback!.success).toBe(0);
+    expect(fallback!.failure).toBe(1);
+    // No token attribution when every attempt failed.
+    expect(fallback!.inputTokens).toBe(0);
+    expect(fallback!.outputTokens).toBe(0);
+
+    expect(primary).toBeUndefined();
+  });
+
+  test('a single-entry requestOptionsArray behaves like the pre-fix code path', () => {
+    recordMetrics(200, [
+      {
+        providerOptions: { provider: 'only' },
+        requestParams: {},
+        responseStatus: 200,
+        response: { usage: { prompt_tokens: 7, completion_tokens: 3 } },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const stored = metricsStore.get(today)?.get('only');
+    expect(stored).toBeDefined();
+    expect(stored!.total).toBe(1);
+    expect(stored!.success).toBe(1);
+    expect(stored!.inputTokens).toBe(7);
+    expect(stored!.outputTokens).toBe(3);
+  });
+
+  test('falls back to the last attempt when no entry has a 2xx responseStatus', () => {
+    // E.g. provider threw before producing a status, so responseStatus is
+    // undefined on every entry. Should still pick the last one rather than
+    // [0].
+    recordMetrics(500, [
+      {
+        providerOptions: { provider: 'primary' },
+        requestParams: {},
+        response: { usage: { prompt_tokens: 999, completion_tokens: 999 } },
+      } as any,
+      {
+        providerOptions: { provider: 'fallback' },
+        requestParams: {},
+        response: { usage: { prompt_tokens: 11, completion_tokens: 22 } },
+      } as any,
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const fallback = metricsStore.get(today)?.get('fallback');
+    expect(fallback).toBeDefined();
+    expect(fallback!.total).toBe(1);
+    expect(fallback!.failure).toBe(1);
+    expect(fallback!.inputTokens).toBe(11);
+    expect(fallback!.outputTokens).toBe(22);
+  });
+});
+

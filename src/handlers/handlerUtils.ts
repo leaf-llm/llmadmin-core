@@ -684,6 +684,13 @@ export async function tryTargetsRecursively(
           `${currentJsonPath}.targets[${originalIndex}]`,
           currentInheritedConfig
         );
+        // Stamp this attempt's HTTP status onto its log entry so the metrics
+        // middleware can attribute the request to the target that actually
+        // served it (the last successful attempt, or the final failed one).
+        const attemptLogs = c.get('requestOptions') as any[] | undefined;
+        if (attemptLogs && attemptLogs.length > 0) {
+          attemptLogs[attemptLogs.length - 1].responseStatus = response?.status;
+        }
         const codes = currentTarget.strategy?.onStatusCodes;
         const gatewayException =
           response?.headers.get(`x-${POWERED_BY}-gateway-exception`) === 'true';
