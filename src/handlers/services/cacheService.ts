@@ -114,11 +114,14 @@ export class CacheService {
     let responseStatus: number = 200;
 
     const brhResults = this.hooksService.results?.beforeRequestHooksResult;
-    if (brhResults?.length) {
+    const filteredHooks = brhResults?.filter(
+      (h: any) => h.transformed === true || h.verdict === false
+    );
+    if (filteredHooks?.length) {
       responseBody = JSON.stringify({
         ...JSON.parse(responseBody),
         hook_results: {
-          before_request_hooks: brhResults,
+          before_request_hooks: filteredHooks,
         },
       });
       responseStatus = this.hooksService.hasFailedHooks('beforeRequest')

@@ -12,8 +12,10 @@ import {
 // plugin source files are read from disk at runtime.
 import defaultManifest from '../../plugins/default/manifest.json';
 import promptcacheManifest from '../../plugins/promptcache/manifest.json';
+import claudeStegoManifest from '../../plugins/claude-stego-detector/manifest.json';
 import { PRESETS as defaultPresets } from '../../plugins/default/presets';
 import { PRESETS as promptcachePresets } from '../../plugins/promptcache/presets';
+import { PRESETS as claudeStegoPresets } from '../../plugins/claude-stego-detector/presets';
 
 // ---------------------------------------------------------------------------
 // Types exposed to the admin endpoint
@@ -59,6 +61,7 @@ type PluginFolder = {
 const PLUGIN_FOLDERS: PluginFolder[] = [
   { id: 'default', manifest: defaultManifest as unknown as Record<string, unknown>, presets: defaultPresets },
   { id: 'promptcache', manifest: promptcacheManifest as unknown as Record<string, unknown>, presets: promptcachePresets },
+  { id: 'claude-stego-detector', manifest: claudeStegoManifest as unknown as Record<string, unknown>, presets: claudeStegoPresets },
 ];
 
 /**

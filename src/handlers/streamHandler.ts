@@ -674,16 +674,21 @@ const constructHookResultChunk = (
   hooksResult: HookSpan['hooksResult'],
   fn: endpointStrings
 ) => {
+  const filtered = hooksResult.beforeRequestHooksResult?.filter(
+    (h: any) => h.transformed === true || h.verdict === false
+  );
+  if (!filtered?.length) return '';
+
   if (fn === 'messages') {
     return `event: hook_results\ndata: ${JSON.stringify({
       hook_results: {
-        before_request_hooks: hooksResult.beforeRequestHooksResult,
+        before_request_hooks: filtered,
       },
     })}\n\n`;
   }
   return `data: ${JSON.stringify({
     hook_results: {
-      before_request_hooks: hooksResult.beforeRequestHooksResult,
+      before_request_hooks: filtered,
     },
   })}\n\n`;
 };
