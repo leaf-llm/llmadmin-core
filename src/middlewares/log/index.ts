@@ -172,6 +172,105 @@ export function extractTokens(
   return { inputTokens, outputTokens, cacheInputTokens };
 }
 
+function extractFromSSE(text: string): Record<string, any> | null {
+  if (text.length < 10) return null;
+  const lines = text.split('\n');
+  let usage: Record<string, any> | null = null;
+  let content = '';
+  let reasoning = '';
+  let model = '';
+  const toolCalls: Record<number, { name: string; arguments: string }> = {};
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:') || line === 'data: [DONE]') continue;
+    const jsonStr = line.substring(5).trim();
+    if (!jsonStr) continue;
+    try {
+      const parsed = JSON.parse(jsonStr);
+
+      // --- Model name ---
+      if (!model) {
+        model = parsed.model || parsed.message?.model || '';
+      }
+
+      // --- Usage (take the last one seen) ---
+      if (parsed?.usage && typeof parsed.usage === 'object') {
+        usage = parsed.usage;
+      }
+      if (parsed?.delta?.usage && typeof parsed.delta.usage === 'object') {
+        usage = parsed.delta.usage;
+      }
+
+      // --- OpenAI-style content & reasoning ---
+      const delta = parsed?.choices?.[0]?.delta;
+      if (typeof delta?.content === 'string') {
+        content += delta.content;
+      }
+      if (typeof delta?.reasoning_content === 'string') {
+        reasoning += delta.reasoning_content;
+      }
+      if (Array.isArray(delta?.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
+          if (tc.function?.name) toolCalls[idx].name = tc.function.name;
+          if (tc.function?.arguments) toolCalls[idx].arguments += tc.function.arguments;
+        }
+      }
+
+      // --- Anthropic SSE events ---
+      if (parsed.type === 'content_block_delta' && parsed.delta) {
+        const ad = parsed.delta;
+        if (ad.type === 'text_delta' && typeof ad.text === 'string') {
+          content += ad.text;
+        }
+        if (ad.type === 'thinking_delta' && typeof ad.thinking === 'string') {
+          reasoning += ad.thinking;
+        }
+        if (ad.type === 'input_json_delta' && typeof ad.partial_json === 'string') {
+          const idx = parsed.index ?? 0;
+          if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
+          toolCalls[idx].arguments += ad.partial_json;
+        }
+      }
+      if (
+        parsed.type === 'content_block_start' &&
+        parsed.content_block?.type === 'tool_use'
+      ) {
+        const idx = parsed.index ?? 0;
+        if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
+        toolCalls[idx].name = parsed.content_block.name || '';
+      }
+    } catch {
+      // Not valid JSON, skip
+    }
+  }
+
+  if (!usage && !content && !reasoning && Object.keys(toolCalls).length === 0) {
+    return null;
+  }
+
+  const result: Record<string, any> = {};
+  if (model) result.model = model;
+  if (content || reasoning || Object.keys(toolCalls).length > 0) {
+    const msg: Record<string, any> = {};
+    if (content) msg.content = content;
+    if (reasoning) msg.reasoning_content = reasoning;
+    if (Object.keys(toolCalls).length > 0) {
+      msg.tool_calls = Object.entries(toolCalls)
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([idx, tc]) => ({
+          index: Number(idx),
+          function: { name: tc.name, arguments: tc.arguments },
+        }));
+    }
+    result.choices = [{ message: msg }];
+  }
+  if (usage) result.usage = usage;
+  return result;
+}
+
 function extractUsageFromSSE(text: string): Record<string, any> | null {
   if (text.length < 10 || !text.includes('"usage"')) return null;
   const lines = text.split('\n');
@@ -225,7 +324,7 @@ async function tryReadStreamUsage(c: any): Promise<Record<string, any> | null> {
       if (totalSize > maxSize) break;
     }
     const fullText = chunks.join('');
-    return extractUsageFromSSE(fullText);
+    return extractFromSSE(fullText) || extractUsageFromSSE(fullText);
   } catch {
     return null;
   }
@@ -249,7 +348,7 @@ export function _resetRuntimeCountsForTest() {
 
 export function recordMetrics(status: number, requestOptionsArray: any[]) {
   const dateKey = getDateKey();
-  const provider = getProvider(requestOptionsArray[0] || {});
+  const provider = getProvider(requestOptionsArray[requestOptionsArray.length - 1] || {});
 
   let dailyProviders = metricsStore.get(dateKey);
   if (!dailyProviders) {
@@ -280,7 +379,7 @@ export function recordMetrics(status: number, requestOptionsArray: any[]) {
   }
 
   // Extract tokens from response if available
-  const response = requestOptionsArray[0]?.response;
+  const response = requestOptionsArray[requestOptionsArray.length - 1]?.response;
   if (response && typeof response === 'object') {
     const tokens = extractTokens(response, provider);
     metrics.inputTokens += tokens.inputTokens;
@@ -360,28 +459,43 @@ async function processLog(c: Context, start: number) {
   let responseStatus = c.res?.status || 0;
 
   try {
-    if (requestOptionsArray.length > 0 && requestOptionsArray[0].requestParams?.stream) {
-      // Try to extract usage from the streamed SSE response
-      const streamUsage = await tryReadStreamUsage(c);
-      response = streamUsage || { message: 'The response was a stream.' };
-    } else if (requestOptionsArray.length > 0 && c.res) {
-      response = await c.res.clone().json();
-    } else {
-      // Request was rejected early (e.g., by requestValidator) before requestOptions was set
-      // Try to read the response body anyway
+    const isStreaming =
+      requestOptionsArray.length > 0 &&
+      requestOptionsArray[requestOptionsArray.length - 1].requestParams?.stream;
+
+    if (isStreaming) {
+      // Streaming response — extract content + usage from SSE.
+      // Must call clone() BEFORE any other clone() since ReadableStream can only be teed once.
+      const streamData = await tryReadStreamUsage(c);
+      response = streamData || { message: 'The response was a stream.' };
+    } else if (c.res) {
+      // Non-streaming — read full JSON response.
       try {
-        response = await c.res?.clone()?.json();
+        response = await c.res.clone().json();
       } catch {
-        response = { message: 'Response not available' };
+        response = { message: 'Response body could not be parsed' };
       }
+    } else {
+      response = { message: 'Response not available' };
     }
 
     const responseString = JSON.stringify(response);
     if (requestOptionsArray.length > 0 && responseString.length > MAX_RESPONSE_LENGTH) {
-      requestOptionsArray[0].response =
+      requestOptionsArray[requestOptionsArray.length - 1].response =
         responseString.substring(0, MAX_RESPONSE_LENGTH) + '...';
     } else if (requestOptionsArray.length > 0) {
-      requestOptionsArray[0].response = response;
+      requestOptionsArray[requestOptionsArray.length - 1].response = response;
+    }
+
+    // Ensure raw_response is captured for non-streaming responses:
+    // if the handler didn't store the original upstream response body, fall back
+    // to the final gateway response. Skipped for streaming since the SSE stream
+    // cannot provide the original upstream response format.
+    if (!isStreaming && requestOptionsArray.length > 0 && response) {
+      const lastEntry = requestOptionsArray[requestOptionsArray.length - 1];
+      if (!lastEntry.originalResponse || lastEntry.originalResponse.body == null) {
+        lastEntry.originalResponse = { body: response };
+      }
     }
   } catch (error) {
     console.error('Error processing log:', error);
@@ -393,7 +507,7 @@ async function processLog(c: Context, start: number) {
       time: new Date().toLocaleString(),
       method: c.req.method,
       endpoint: c.req.url.split(':8700')[1],
-      targetUrl: requestOptionsArray[0]?.providerOptions?.requestURL || '',
+      targetUrl: requestOptionsArray[requestOptionsArray.length - 1]?.providerOptions?.requestURL || '',
       status: responseStatus,
       duration: ms,
       requestOptions: requestOptionsArray,
