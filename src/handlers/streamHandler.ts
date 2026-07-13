@@ -259,8 +259,10 @@ export async function handleNonStreamingMode(
   }
 
   const isJsonParsingRequired = responseTransformer || areSyncHooksAvailable;
+  // Always parse the original response body so raw_response is captured for debugging,
+  // even when no transformer is configured. Using clone() avoids consuming the body stream.
   const originalResponseBodyJson: Record<string, any> | null =
-    isJsonParsingRequired ? await response.json() : null;
+    await (isJsonParsingRequired ? response : response.clone()).json();
   let responseBodyJson = originalResponseBodyJson;
   if (responseTransformer) {
     responseBodyJson = responseTransformer(
@@ -292,8 +294,7 @@ export async function handleNonStreamingMode(
           : response.status,
     }),
     json: responseBodyJson as Record<string, any>,
-    // Send original response if transformer exists
-    ...(responseTransformer && { originalResponseBodyJson }),
+    originalResponseBodyJson,
   };
 }
 

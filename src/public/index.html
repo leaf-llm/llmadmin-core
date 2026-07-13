@@ -2150,7 +2150,7 @@
       }
 
       function showLogDetails(time, method, endpoint, targetUrl, status, duration, requestOptions) {
-          const reqOpt = (requestOptions && requestOptions[0]) || null;
+          const reqOpt = (requestOptions && requestOptions.length) ? requestOptions[requestOptions.length - 1] : null;
           const requestParams   = reqOpt?.requestParams             ?? null;
           const response        = reqOpt?.response                  ?? null;
           const rawReq          = reqOpt?.finalUntransformedRequest?.body ?? null;
