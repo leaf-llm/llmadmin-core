@@ -137,6 +137,20 @@ function getProvider(metrics: any): string {
   return metrics?.providerOptions?.provider || 'unknown';
 }
 
+// In a fallback chain, requestOptions holds one entry per attempt (in order).
+// The entry that "owns" this request for metrics purposes is the last one
+// that returned 2xx; if every attempt failed, fall back to the last attempt.
+function pickActiveAttempt(requestOptionsArray: any[]): any {
+  if (!requestOptionsArray || requestOptionsArray.length === 0) return {};
+  for (let i = requestOptionsArray.length - 1; i >= 0; i--) {
+    const s = requestOptionsArray[i]?.responseStatus;
+    if (typeof s === 'number' && s >= 200 && s < 300) {
+      return requestOptionsArray[i];
+    }
+  }
+  return requestOptionsArray[requestOptionsArray.length - 1];
+}
+
 export function extractTokens(
   response: any,
   provider: string
@@ -348,7 +362,8 @@ export function _resetRuntimeCountsForTest() {
 
 export function recordMetrics(status: number, requestOptionsArray: any[]) {
   const dateKey = getDateKey();
-  const provider = getProvider(requestOptionsArray[requestOptionsArray.length - 1] || {});
+  const activeAttempt = pickActiveAttempt(requestOptionsArray);
+  const provider = getProvider(activeAttempt);
 
   let dailyProviders = metricsStore.get(dateKey);
   if (!dailyProviders) {
@@ -379,7 +394,7 @@ export function recordMetrics(status: number, requestOptionsArray: any[]) {
   }
 
   // Extract tokens from response if available
-  const response = requestOptionsArray[requestOptionsArray.length - 1]?.response;
+  const response = activeAttempt?.response;
   if (response && typeof response === 'object') {
     const tokens = extractTokens(response, provider);
     metrics.inputTokens += tokens.inputTokens;
@@ -454,15 +469,15 @@ async function processLog(c: Context, start: number) {
   if (!c.req.url.includes('/v1/')) return;
 
   const requestOptionsArray = c.get('requestOptions') || [];
+  const activeAttempt = pickActiveAttempt(requestOptionsArray);
 
   let response: any;
   let responseStatus = c.res?.status || 0;
 
-  try {
-    const isStreaming =
-      requestOptionsArray.length > 0 &&
-      requestOptionsArray[requestOptionsArray.length - 1].requestParams?.stream;
+  const isStreaming =
+    requestOptionsArray.length > 0 && activeAttempt?.requestParams?.stream;
 
+  try {
     if (isStreaming) {
       // Streaming response — extract content + usage from SSE.
       // Must call clone() BEFORE any other clone() since ReadableStream can only be teed once.
@@ -481,10 +496,10 @@ async function processLog(c: Context, start: number) {
 
     const responseString = JSON.stringify(response);
     if (requestOptionsArray.length > 0 && responseString.length > MAX_RESPONSE_LENGTH) {
-      requestOptionsArray[requestOptionsArray.length - 1].response =
+      activeAttempt.response =
         responseString.substring(0, MAX_RESPONSE_LENGTH) + '...';
     } else if (requestOptionsArray.length > 0) {
-      requestOptionsArray[requestOptionsArray.length - 1].response = response;
+      activeAttempt.response = response;
     }
 
     // Ensure raw_response is captured for non-streaming responses:
@@ -492,9 +507,8 @@ async function processLog(c: Context, start: number) {
     // to the final gateway response. Skipped for streaming since the SSE stream
     // cannot provide the original upstream response format.
     if (!isStreaming && requestOptionsArray.length > 0 && response) {
-      const lastEntry = requestOptionsArray[requestOptionsArray.length - 1];
-      if (!lastEntry.originalResponse || lastEntry.originalResponse.body == null) {
-        lastEntry.originalResponse = { body: response };
+      if (!activeAttempt.originalResponse || activeAttempt.originalResponse.body == null) {
+        activeAttempt.originalResponse = { body: response };
       }
     }
   } catch (error) {
@@ -507,7 +521,7 @@ async function processLog(c: Context, start: number) {
       time: new Date().toLocaleString(),
       method: c.req.method,
       endpoint: c.req.url.split(':8700')[1],
-      targetUrl: requestOptionsArray[requestOptionsArray.length - 1]?.providerOptions?.requestURL || '',
+      targetUrl: activeAttempt?.providerOptions?.requestURL || '',
       status: responseStatus,
       duration: ms,
       requestOptions: requestOptionsArray,

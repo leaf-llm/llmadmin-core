@@ -242,6 +242,7 @@ export async function listPlugins(): Promise<PluginSummary[]> {
 const PLUGIN_DEFAULT_PRESETS: Record<string, string[]> = {
   default: ['pii_detection', 'prompt_injection', 'url_safety_blacklist', 'url_safety_ssrf'],
   promptcache: ['system_prompt_cache'],
+  'claude-stego-detector': ['claude_stego_detector'],
 };
 
 export async function setPluginEnabled(
@@ -267,6 +268,13 @@ export async function setPluginEnabled(
         settings.presets_enabled = settings.presets_enabled ?? {};
         settings.presets_enabled[id] = enabledPresetIds;
       }
+    }
+    // For plugins with a single, intrinsic preset, re-add it on every enable
+    // so the user doesn't have to remember to flip the preset toggle too.
+    if (id === 'claude-stego-detector' && !(enabledPresetIds ?? []).includes('claude_stego_detector')) {
+      enabledPresetIds = [...(enabledPresetIds ?? []), 'claude_stego_detector'];
+      settings.presets_enabled = settings.presets_enabled ?? {};
+      settings.presets_enabled[id] = enabledPresetIds;
     }
     if (enabledPresetIds && enabledPresetIds.length > 0) {
       const presets = getPresetModule(id);
