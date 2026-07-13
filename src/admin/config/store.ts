@@ -18,6 +18,8 @@ export const SUPPORTED_PROVIDERS: ProviderId[] = [
   'minimax',
   'doubao',
   'deepseek',
+  'openai-compatible',
+  'anthropic-compatible',
 ];
 
 type ProviderConfig = {
