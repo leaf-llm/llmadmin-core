@@ -170,11 +170,17 @@ adminApp.get('/metrics', (c) => {
   });
 });
 
+function resolveBackendProvider(provider: string): string {
+  if (provider === 'openai-compatible') return 'openai';
+  if (provider === 'anthropic-compatible') return 'anthropic';
+  return provider;
+}
+
 adminApp.post('/providers/:provider/test-connectivity', async (c) => {
   const provider = c.req.param('provider') as ProviderId;
   const body = await c.req.json().catch(() => ({}));
 
-  const providerConfig = Providers[provider];
+  const providerConfig = Providers[resolveBackendProvider(provider)];
   if (!providerConfig?.api) {
     return c.json({ ok: false, message: 'Unknown provider' }, 404);
   }
@@ -274,17 +280,20 @@ adminApp.post('/providers/:provider/test-connectivity', async (c) => {
     }
   };
 
-  const [openaiResult, anthropicResult] = await Promise.all([
+  const tests: Promise<{ ok: boolean; message: string }>[] = [
     testConnectivity(resolvedBaseUrl, 'OpenAI'),
-    testConnectivity(resolvedBaseUrlAnthropic, 'Anthropic'),
-  ]);
+  ];
+  if (resolvedBaseUrlAnthropic) {
+    tests.push(testConnectivity(resolvedBaseUrlAnthropic, 'Anthropic'));
+  }
+  const results = await Promise.all(tests);
 
-  const ok = openaiResult.ok || anthropicResult.ok;
+  const ok = results.some((r) => r.ok);
 
   return c.json({
     ok,
-    openai: resolvedBaseUrl ? openaiResult : undefined,
-    anthropic: resolvedBaseUrlAnthropic ? anthropicResult : undefined,
+    openai: resolvedBaseUrl ? results[0] : undefined,
+    anthropic: resolvedBaseUrlAnthropic ? results[1] : undefined,
   });
 });
 
@@ -292,7 +301,7 @@ adminApp.get('/provider-models', async (c) => {
   const provider = c.req.query('provider') as ProviderId;
   const configId = c.req.query('configId');
 
-  const providerConfig = Providers[provider];
+  const providerConfig = Providers[resolveBackendProvider(provider)];
   if (!providerConfig?.api) {
     return c.json({ object: 'list', data: [] }, 200);
   }
