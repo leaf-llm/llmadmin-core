@@ -92,22 +92,34 @@ export const memoryCache = () => {
     if (
       requestOptions &&
       Array.isArray(requestOptions) &&
-      requestOptions.length > 0 &&
-      requestOptions[0].requestParams.stream === (false || undefined)
+      requestOptions.length > 0
     ) {
-      requestOptions = requestOptions[0];
-      if (requestOptions.cacheMode === 'simple') {
-        await putInCache(
-          null,
-          null,
-          requestOptions.transformedRequest.body,
-          await requestOptions.response.clone().json(),
-          requestOptions.providerOptions.rubeusURL,
-          '',
-          null,
-          new Date().getTime() +
-            (requestOptions.cacheMaxAge || 24 * 60 * 60 * 1000)
-        );
+      // Pick the last 2xx attempt (or the last entry if all failed) — matches
+      // the log middleware's pickActiveAttempt so the cached payload reflects
+      // the response that was actually returned to the caller.
+      let active = requestOptions[requestOptions.length - 1];
+      for (let i = requestOptions.length - 1; i >= 0; i--) {
+        const s = requestOptions[i]?.responseStatus;
+        if (typeof s === 'number' && s >= 200 && s < 300) {
+          active = requestOptions[i];
+          break;
+        }
+      }
+      requestOptions = active;
+      if (requestOptions.requestParams.stream !== true) {
+        if (requestOptions.cacheMode === 'simple') {
+          await putInCache(
+            null,
+            null,
+            requestOptions.transformedRequest.body,
+            await requestOptions.response.clone().json(),
+            requestOptions.providerOptions.rubeusURL,
+            '',
+            null,
+            new Date().getTime() +
+              (requestOptions.cacheMaxAge || 24 * 60 * 60 * 1000)
+          );
+        }
       }
     }
   };
