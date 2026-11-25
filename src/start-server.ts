@@ -9,14 +9,22 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { realTimeHandlerNode } from './handlers/realtimeHandlerNode';
 import { requestValidator } from './middlewares/requestValidator';
 import { addLogClient, removeLogClient, getCurrentTotals } from './middlewares/log/index';
-import { setConfigPath, loadConfig } from './configShared';
+import {
+  setConfigPath,
+  ensureConfigLoaded,
+  closeConfigStore,
+} from './configShared';
+import { safeEqual, tryParseBearerToken } from './utils/auth';
+import { initUsageStore, closeUsageStore } from './storage/usageStore';
 
 // Extract command line arguments
 const args = process.argv.slice(2);
 
-// Config path (passed by desktop app via --config=<path>)
+// Config path: --config wins, then CONFIG_PATH, then ./conf.json. Web
+// deployments normally use PostgreSQL, where this path is only a seed source.
 const configArg = args.find((arg) => arg.startsWith('--config='));
-const configPath = configArg ? configArg.split('=')[1] : './conf.json';
+const configPath =
+  configArg?.split('=')[1] || process.env.CONFIG_PATH || './conf.json';
 setConfigPath(configPath);
 
 // Port and headless mode
@@ -24,10 +32,13 @@ const defaultPort = 8700;
 const portArg = args.find((arg) => arg.startsWith('--port='));
 const isHeadless = args.includes('--headless');
 
-// Determine effective port: CLI --port wins, then config file, then default
+// Effective port: --port wins, then PORT (Render/Railway/Fly inject this),
+// then the config file, then 8700.
 let effectivePort = defaultPort;
 if (portArg) {
-  effectivePort = parseInt(portArg.split('=')[1]);
+  effectivePort = parseInt(portArg.split('=')[1], 10);
+} else if (process.env.PORT) {
+  effectivePort = parseInt(process.env.PORT, 10);
 } else {
   try {
     const { readFileSync } = await import('fs');
@@ -38,9 +49,32 @@ if (portArg) {
     }
   } catch {}
 }
+if (!Number.isFinite(effectivePort) || effectivePort <= 0) {
+  effectivePort = defaultPort;
+}
 
-// Load config into cache (async, for use by config.store.ts etc.)
-loadConfig().catch(() => {});
+const isQuiet =
+  process.env.NODE_ENV === 'production' ||
+  process.env.QUIET_LOG === 'true' ||
+  args.includes('--quiet-log');
+
+// Load config into cache. In PostgreSQL mode this also creates the schema.
+try {
+  await ensureConfigLoaded();
+} catch (e: any) {
+  console.error(
+    '[config] Failed to load configuration at startup:',
+    e?.message || e
+  );
+  // Keep listening: /admin/health stays up, /admin/ready reports the failure,
+  // and the platform can surface the error instead of crash-looping.
+}
+
+try {
+  await initUsageStore();
+} catch (e: any) {
+  console.error('[usage] Failed to initialise usage store:', e?.message || e);
+}
 
 // Detect if running as compiled bun binary (production) or in dev mode
 const isBunBinary =
@@ -56,7 +90,7 @@ const ppid = ppidArg ? parseInt(ppidArg.split('=')[1]) : 0;
 const setupStaticServing = async () => {
   const { join, dirname, extname, resolve } = await import('path');
   const { fileURLToPath } = await import('url');
-  const { readFileSync, existsSync, statSync } = await import('fs');
+  const { readFileSync, existsSync, statSync, realpathSync } = await import('fs');
 
   let publicDir: string;
   let scriptDir: string;
@@ -75,13 +109,17 @@ const setupStaticServing = async () => {
     publicDir = join(scriptDir, 'public');
   }
 
-  // Serve the index.html content directly for both routes
-  // Only serve dev UI in development mode (not in compiled bun binary)
-  if (!isBunBinary) {
+  // Legacy log viewer. It predates the admin token and its EventSource cannot
+  // send an Authorization header, so it is opt-in only. Web deployments set
+  // ENABLE_LEGACY_LOGS=false and use the React admin instead.
+  const legacyLogsEnabled =
+    process.env.ENABLE_LEGACY_LOGS !== 'false' && process.env.WEB_UI !== 'true';
+  if (!isBunBinary && legacyLogsEnabled) {
     const indexPath = join(publicDir, 'index.html');
     const indexContent = readFileSync(indexPath, 'utf-8');
 
     const serveIndex = (c: Context) => {
+      c.header('Cache-Control', 'no-cache');
       return c.html(indexContent);
     };
 
@@ -119,31 +157,64 @@ const setupStaticServing = async () => {
       return c.text('Not Found', 404);
     }
     const html = readFileSync(adminIndexPath, 'utf-8');
+    c.header('Cache-Control', 'no-cache');
     return c.html(html);
   };
 
-  app.get('/public/admin', (c: Context) => c.redirect('/public/admin/'));
+  app.get('/public/admin', (c: Context) =>
+    c.redirect('/public/admin/')
+  );
   app.get('/public/admin/', serveAdminIndex);
   app.get('/public/admin/*', (c: Context) => {
     const url = new URL(c.req.url);
     const prefix = '/public/admin/';
-    const rel = url.pathname.startsWith(prefix)
+    let rel = url.pathname.startsWith(prefix)
       ? url.pathname.slice(prefix.length)
       : '';
 
+    try {
+      rel = decodeURIComponent(rel);
+    } catch {
+      return c.text('Not Found', 404);
+    }
+    if (rel.includes('\0') || rel.split('/').includes('..')) {
+      return c.text('Not Found', 404);
+    }
+
     const resolvedAdminDir = resolve(adminDir);
     const filePath = resolve(join(adminDir, rel));
-    if (!filePath.startsWith(resolvedAdminDir)) {
+    if (
+      filePath !== resolvedAdminDir &&
+      !filePath.startsWith(resolvedAdminDir + (process.platform === 'win32' ? '\\' : '/'))
+    ) {
       return c.text('Not Found', 404);
     }
 
     if (!existsSync(filePath)) {
+      // SPA fallback: extension-less paths render the React shell so deep
+      // links keep working. Missing hashed assets should stay 404.
+      if (!extname(rel)) {
+        return serveAdminIndex(c);
+      }
       return c.text('Not Found', 404);
     }
 
     try {
       const st = statSync(filePath);
       if (!st.isFile()) return c.text('Not Found', 404);
+
+      // Resolve symlinks and ensure the final target stays inside the admin
+      // directory (prevents path traversal through a symlinked asset).
+      const realFile = realpathSync(filePath);
+      const realDir = realpathSync(adminDir);
+      if (
+        realFile !== realDir &&
+        !realFile.startsWith(
+          realDir + (process.platform === 'win32' ? '\\' : '/')
+        )
+      ) {
+        return c.text('Not Found', 404);
+      }
     } catch {
       return c.text('Not Found', 404);
     }
@@ -152,12 +223,21 @@ const setupStaticServing = async () => {
     const contentType = contentTypeByExt[ext] ?? 'application/octet-stream';
     const data = readFileSync(filePath);
     c.header('Content-Type', contentType);
-    return c.body(data);
+    c.header(
+      'Cache-Control',
+      rel.startsWith('assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache'
+    );
+    return c.body(data as any);
   });
 
-  // Redirect `/public` to `/public/`
+  // Redirect `/public` to the admin UI in web mode; keep the legacy viewer
+  // path for desktop.
   app.get('/public', (c: Context) => {
-    return c.redirect('/public/');
+    return c.redirect(
+      process.env.WEB_UI === 'true' ? '/public/admin/' : '/public/'
+    );
   });
 };
 
@@ -180,9 +260,23 @@ async function sendWithTimeout(fn: () => Promise<void>, timeoutMs = 200) {
   return Promise.race([fn(), timeoutPromise]);
 }
 
-app.get('/log/stream', (c: Context) => {
+app.get('/log/stream', async (c: Context) => {
   const clientId = Date.now().toString();
   const mode = c.req.query('type') === 'counts' ? 'counts' : 'log';
+
+  // This stream can include full request/response logs, so it needs the same
+  // protection as the admin API. The React UI uses fetch() so it can attach
+  // the Authorization header (EventSource cannot).
+  const expectedToken = String(process.env.ADMIN_TOKEN || '').trim();
+  if (expectedToken) {
+    const provided =
+      tryParseBearerToken(c.req.header('authorization')) ||
+      c.req.header('x-admin-token') ||
+      '';
+    if (!(await safeEqual(provided, expectedToken))) {
+      return c.json({ ok: false, message: 'Unauthorized' }, 401);
+    }
+  }
 
   const origin = c.req.header('origin');
   if (
@@ -200,7 +294,7 @@ app.get('/log/stream', (c: Context) => {
 
   return streamSSE(c, async (stream) => {
     const client = {
-      mode,
+      mode: mode as 'log' | 'counts',
       sendLog: (message: any) =>
         sendWithTimeout(() => stream.writeSSE(message)),
     };
@@ -279,7 +373,13 @@ app.get(
 const server = serve({
   fetch: app.fetch,
   port: effectivePort,
+  hostname: '0.0.0.0',
 });
+
+// LLM streams can legitimately run for minutes. Node's default 5-minute
+// request timeout would cut them off; platform proxies still apply their own
+// limits, which are documented.
+(server as any).requestTimeout = 0;
 
 const url = `http://localhost:${effectivePort}`;
 
@@ -332,8 +432,9 @@ async function showLoadingAnimation() {
   });
 }
 
-// Clear the console and show animation before main output (dev mode only)
-if (!isBunBinary) {
+// Clear the console and show animation before main output (interactive dev
+// only). Production logs stay append-only so Render/Fly can capture startup.
+if (!isBunBinary && !isQuiet) {
   console.clear();
   await showLoadingAnimation();
 
@@ -343,22 +444,26 @@ if (!isBunBinary) {
 
   // Secondary information on single lines
   if (!isHeadless) {
-    console.log('\n\x1b[90m📱 UI:\x1b[0m \x1b[36m%s\x1b[0m', `${url}/public/`);
+    console.log('\n\x1b[90m📱 UI:\x1b[0m \x1b[36m%s\x1b[0m', `${url}/public/admin/`);
 
     // Open browser to UI (cross-platform)
     if (process.platform === 'win32') {
       import('child_process').then(({ exec }) => {
-        exec(`start ${url}/public/`);
+        exec(`start ${url}/public/admin/`);
       });
     } else {
       import('child_process').then(({ exec }) => {
-        exec(`open ${url}/public/`);
+        exec(`open ${url}/public/admin/`);
       });
     }
   }
 
   // Single-line ready message
   console.log('\n\x1b[32m✨ Ready for connections!\x1b[0m');
+} else {
+  console.log(
+    `[startup] gateway listening on 0.0.0.0:${effectivePort} (storage=${process.env.CONFIG_STORE || 'auto'})`
+  );
 }
 
 process.on('uncaughtException', (err) => {
@@ -369,13 +474,27 @@ process.on('unhandledRejection', (err) => {
   console.error('Unhandled rejection', err);
 });
 
-// Handle termination signals for graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('\nReceived SIGTERM, shutting down...');
-  process.exit(0);
-});
+// Graceful shutdown: stop accepting connections, close the database pool,
+// then exit. A hard timeout prevents a stuck connection from blocking a
+// platform redeploy forever.
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] received ${signal}`);
+  const hardStop = setTimeout(() => process.exit(1), 10_000);
+  try {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeUsageStore();
+    await closeConfigStore();
+    clearTimeout(hardStop);
+    process.exit(0);
+  } catch (e) {
+    clearTimeout(hardStop);
+    console.error('[shutdown] error while closing:', e);
+    process.exit(1);
+  }
+}
 
-process.on('SIGINT', () => {
-  console.log('\nReceived SIGINT, shutting down...');
-  process.exit(0);
-});
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

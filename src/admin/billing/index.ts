@@ -42,16 +42,16 @@ export async function getUsage(params: {
           from: params.from,
           to: params.to,
         });
-        totals = sumTotals(totals, t);
-        byModel.push(...rows);
+        if (t) totals = sumTotals(totals, t);
+        if (Array.isArray(rows)) byModel.push(...rows);
       } else if (provider === 'anthropic') {
         const { totals: t, byModel: rows } = await getAnthropicUsage({
           apiKey: creds.apiKey,
           from: params.from,
           to: params.to,
         });
-        totals = sumTotals(totals, t);
-        byModel.push(...rows);
+        if (t) totals = sumTotals(totals, t);
+        if (Array.isArray(rows)) byModel.push(...rows);
       } else {
         // Not implemented yet for other providers.
       }

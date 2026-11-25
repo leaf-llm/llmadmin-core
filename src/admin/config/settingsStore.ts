@@ -1,6 +1,4 @@
-import { readFile, writeFile } from 'fs/promises';
-
-import { getConfig, getConfigPath, loadConfig } from '../../configShared';
+import { ensureConfigLoaded, mutateConfig } from '../../storage';
 import type { HookObject } from '../../middlewares/hooks/types';
 
 export type PluginCredentials = Record<string, string>;
@@ -28,13 +26,11 @@ function getDefaultSettings(): Settings {
 }
 
 /**
- * Load the `settings` section of conf.json (plugins_enabled, credentials, etc.).
- * Re-reads from disk on every call so writes from other sources are picked up.
+ * Load the `settings` section of the unified config.
  */
 export async function loadSettings(): Promise<Settings> {
-  await loadConfig();
-  const unified = getConfig() as { settings?: Settings } | null;
-  const settings = unified?.settings;
+  const loaded = await ensureConfigLoaded();
+  const settings = (loaded.doc.settings ?? null) as Settings | null;
   if (!settings) {
     return getDefaultSettings();
   }
@@ -55,54 +51,18 @@ export async function loadSettings(): Promise<Settings> {
       : [],
     presets_enabled:
       settings.presets_enabled && typeof settings.presets_enabled === 'object'
-        ? settings.presets_enabled as Record<string, string[]>
+        ? (settings.presets_enabled as Record<string, string[]>)
         : {},
   };
 }
 
 /**
- * Read-modify-write the `settings` section of conf.json, preserving the
- * `gateway` and `server` sections. Other concurrent writers could be lost
- * (no file lock) — acceptable for single-admin local use.
+ * Read-modify-write the `settings` section through the storage layer's
+ * optimistic-concurrency path. Preserves gateway/server and unknown keys.
  */
 export async function saveSettings(settings: Settings): Promise<void> {
-  const configPath = getConfigPath();
-  let raw: string;
-  try {
-    raw = await readFile(configPath, 'utf-8');
-  } catch (e: any) {
-    if (e?.code === 'ENOENT') {
-      // No existing config — write a fresh one with just settings + defaults.
-      const fresh = {
-        settings,
-        gateway: {
-          providers: {},
-          text: { routing: [], userConfig: null },
-          image: { routing: [], userConfig: null },
-          video: { routing: [], userConfig: null },
-          audio: { routing: [], userConfig: null },
-          mcp: { routing: [], userConfig: null },
-        },
-        server: { port: 8700, headless: false },
-      };
-      await writeFile(configPath, JSON.stringify(fresh, null, 2), 'utf-8');
-      return;
-    }
-    throw e;
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('conf.json is not valid JSON — refusing to overwrite');
-  }
-
-  parsed.settings = settings;
-  await writeFile(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
-
-  // Refresh the in-memory config cache so synchronous readers
-  // (requestContext.getDefaultHooksFor, plugins/index.ts loadEnabled)
-  // see updated settings immediately - no restart required.
-  await loadConfig();
+  await mutateConfig((doc) => ({
+    ...doc,
+    settings,
+  }));
 }

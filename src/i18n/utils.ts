@@ -1,4 +1,4 @@
-import i18next from './index';
+import * as i18n from './index';
 import en from './translations/en.json';
 import zh from './translations/zh.json';
 
@@ -24,11 +24,11 @@ export const ERROR_CODES = {
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 export function t(key: string, options?: Record<string, string | number>): string {
-  return i18next.t(key, options);
+  return i18n.t(key, options);
 }
 
 export function setLanguage(lang: string): void {
-  i18next.changeLanguage(lang);
+  i18n.setLanguage(lang);
 }
 
 export function detectLanguage(acceptLanguage: string | null): string {
