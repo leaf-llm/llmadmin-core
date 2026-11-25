@@ -250,8 +250,7 @@ app.use(
 // logHandler covers `processLog` → `recordMetrics` + `broadcastLog` and
 // is what feeds the /log/stream SSE used by the legacy /public/ log
 // viewer and the in-process metrics store. Register it for both node
-// and bun so dev:desktop (which runs on bun via `npm run bun:dev`) shows
-// log entries the same way dev:node does.
+// and bun so desktop/web dev shows log entries the same way the Node server does.
 if (['node', 'bun'].includes(getRuntimeKey())) {
   app.use(logHandler());
 }

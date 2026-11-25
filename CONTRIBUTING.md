@@ -20,9 +20,9 @@ cp conf.example.json conf.json
 $EDITOR conf.json          # fill in at least one real provider key
 
 # Run the gateway in dev mode
-npm run dev:node           # Node
+npm run dev           # Node
 # or:
-bun run dev:node           # Bun
+npm run dev:bun           # Bun
 
 # Run the test suites
 npm run test:gateway

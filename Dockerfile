@@ -47,4 +47,4 @@ COPY --from=build /app/patches /app/patches
 EXPOSE 8700
 
 ENTRYPOINT ["npm"]
-CMD ["run", "start:node"]
+CMD ["run", "start"]

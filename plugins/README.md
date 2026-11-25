@@ -176,7 +176,7 @@ To build plugins into your Gateway, follow these steps:
 3. Run the build command to compile the plugins:
 
 ```
-npm run build-plugins
+npm run build
 ```
 
 This command will compile the plugins and prepare them for use with the Gateway.
@@ -185,13 +185,9 @@ This command will compile the plugins and prepare them for use with the Gateway.
 
 Once you've built the plugins, they will be automatically deployed with the Gateway when you run it. You can start the Gateway using one of the following commands:
 
-- For development:
+- For Node.js development:
   ```
   npm run dev
-  ```
-- For Node.js:
-  ```
-  npm run dev:node
   ```
 - For Cloudflare Workers:
   ```

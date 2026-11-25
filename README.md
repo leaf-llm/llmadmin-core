@@ -49,9 +49,9 @@ $EDITOR conf.json
 npm install
 
 # 3. Run the gateway (Node) — listens on http://localhost:8700
-npm run dev:node
+npm run dev
 # or, if you have Bun:
-bun run dev:node
+npm run dev:bun
 ```
 
 Talk to it with the OpenAI SDK:

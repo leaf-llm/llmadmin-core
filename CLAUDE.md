@@ -9,10 +9,11 @@ This is the **Portkey AI Gateway** - a fast, reliable AI gateway that routes req
 ## Development Commands
 
 ### Core Development
-- `npm run dev` - Start development server using Wrangler (Cloudflare Workers)
-- `npm run dev:node` - Start development server using Node.js
-- `npm run build` - Build the project for production
-- `npm run build-plugins` - Build the plugin system
+- `npm run dev` - Start the development server using Node.js
+- `npm run dev:workerd` - Start the development server using Wrangler (Cloudflare Workers)
+- `npm run dev:bun` - Start the development server with Bun
+- `npm run build` - Build the Node.js server bundle
+- `npm run build:bun` - Compile the standalone Bun binary
 
 ### Testing
 - `npm run test:gateway` - Run tests for the main gateway code (src/)
@@ -23,11 +24,11 @@ This is the **Portkey AI Gateway** - a fast, reliable AI gateway that routes req
 ### Code Quality
 - `npm run format` - Format code with Prettier
 - `npm run format:check` - Check code formatting
-- `npm run pretty` - Alternative format command
 
 ### Deployment
 - `npm run deploy` - Deploy to Cloudflare Workers
-- `npm run start:node` - Start production Node.js server
+- `npm run start` - Start the production Node.js server
+- `npm run start:bun` - Start the compiled Bun binary
 
 ## Architecture
 
@@ -53,7 +54,7 @@ This is the **Portkey AI Gateway** - a fast, reliable AI gateway that routes req
 **Plugin System (`plugins/`)**
 - Guardrail plugins for content filtering, PII detection, etc.
 - Each plugin has `manifest.json` defining capabilities
-- Plugins are built separately with `npm run build-plugins`
+- Plugins are statically bundled by the normal `npm run build`
 
 ### Key Concepts
 
