@@ -51,7 +51,7 @@ export const modelsHandler = async (context: Context, next: Next) => {
   };
 
   const resp = await fetch(requestRoute, fetchOptions);
-  const body = await resp.json();
+  const body = (await resp.json()) as any;
 
   // Inject llmadmin as a model
   if (body.data && Array.isArray(body.data)) {

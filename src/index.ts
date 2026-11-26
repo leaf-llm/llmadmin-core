@@ -8,6 +8,7 @@ import { Context, Hono } from 'hono';
 import { prettyJSON } from 'hono/pretty-json';
 import { HTTPException } from 'hono/http-exception';
 import { compress } from 'hono/compress';
+import { bodyLimit } from 'hono/body-limit';
 import { getRuntimeKey } from 'hono/adapter';
 // import { env } from 'hono/adapter' // Have to set this up for multi-environment deployment
 
@@ -42,10 +43,27 @@ import { adminApp } from './admin/routes';
 // utils
 import { logger } from './apm';
 import { createCacheBackendsRedis } from './shared/services/cache';
+import { ensureConfigLoaded } from './storage';
+import {
+  isProduction,
+  isTruthy,
+  parseTokenList,
+  safeEqual,
+  tryParseBearerToken,
+} from './utils/auth';
 
 // Create a new Hono server instance
 const app = new Hono();
 const runtime = getRuntimeKey();
+
+// Baseline browser hardening. The admin token lives in sessionStorage, so a
+// strict frame/referrer policy and MIME sniffing protection are cheap wins.
+app.use('*', async (c, next) => {
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Referrer-Policy', 'no-referrer');
+  await next();
+});
 
 if (runtime === 'node' && process.env.REDIS_CONNECTION_STRING) {
   createCacheBackendsRedis(process.env.REDIS_CONNECTION_STRING);
@@ -96,17 +114,143 @@ if (runtime === 'node') {
  * GET route for the root path.
  * Returns a greeting message.
  */
-app.get('/', (c) => c.text('AI Gateway says hey!'));
+app.get('/', (c) =>
+  isTruthy(process.env.WEB_UI)
+    ? c.redirect('/public/admin/')
+    : c.text('AI Gateway says hey!')
+);
 
 // Use prettyJSON middleware for all routes
 app.use('*', prettyJSON());
+
+/**
+ * Make sure the config cache is populated before any route that may read it
+ * synchronously. Health/readiness are exempt so a database outage does not
+ * make the process look dead to the platform.
+ */
+app.use('*', async (c, next) => {
+  if (
+    c.req.path === '/admin/health' ||
+    c.req.path === '/admin/ready' ||
+    c.req.path === '/' ||
+    c.req.path === '/shutdown' ||
+    c.req.path.startsWith('/public/') ||
+    c.req.path === '/public' ||
+    c.req.path.startsWith('/log/')
+  ) {
+    return next();
+  }
+  try {
+    await ensureConfigLoaded();
+  } catch (e: any) {
+    logger.error('Failed to load configuration:', e?.message || e);
+    return c.json(
+      {
+        ok: false,
+        code: 'config_unavailable',
+        message:
+          'Configuration storage is not available. Check DATABASE_URL / CONFIG_STORE and retry.',
+      },
+      503
+    );
+  }
+  return next();
+});
+
+function getGatewayKeys(): string[] {
+  return parseTokenList(process.env.GATEWAY_API_KEY);
+}
+
+function getWebSocketBearerToken(c: Context): string {
+  const protocolHeader = c.req.header('sec-websocket-protocol') || '';
+  for (const raw of protocolHeader.split(',')) {
+    const value = raw.trim();
+    if (value.toLowerCase().startsWith('bearer.')) {
+      return value.slice('bearer.'.length);
+    }
+  }
+  return '';
+}
+
+/**
+ * Optional gateway API key. The admin UI is protected by ADMIN_TOKEN; this
+ * protects the data plane so a public deployment does not become an open
+ * proxy for the configured provider keys.
+ */
+app.use('/v1/*', async (c, next) => {
+  if (c.req.method === 'OPTIONS') return c.body(null, 204);
+  if (isTruthy(process.env.GATEWAY_AUTH_DISABLED)) return next();
+
+  const keys = getGatewayKeys();
+  if (keys.length === 0) {
+    if (isProduction()) {
+      return c.json(
+        {
+          error: {
+            message:
+              'GATEWAY_API_KEY is not configured. Set it in the environment or explicitly set GATEWAY_AUTH_DISABLED=true to run an open gateway.',
+            type: 'invalid_request_error',
+            code: 'gateway_key_not_configured',
+          },
+        },
+        503
+      );
+    }
+    return next();
+  }
+
+  const headerToken =
+    tryParseBearerToken(c.req.header('authorization')) ||
+    c.req.header('x-api-key') ||
+    c.req.header('api-key') ||
+    '';
+  const token =
+    headerToken ||
+    (c.req.header('upgrade')?.toLowerCase() === 'websocket'
+      ? getWebSocketBearerToken(c)
+      : '');
+
+  for (const key of keys) {
+    if (await safeEqual(token, key)) {
+      return next();
+    }
+  }
+
+  return c.json(
+    {
+      error: {
+        message: 'Invalid API key',
+        type: 'invalid_request_error',
+        code: 'invalid_api_key',
+      },
+    },
+    401
+  );
+});
+
+app.use(
+  '/v1/*',
+  bodyLimit({
+    maxSize: Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024),
+    onError: (c) =>
+      c.json(
+        {
+          error: {
+            message: 'Request body too large',
+            type: 'invalid_request_error',
+            code: 'payload_too_large',
+          },
+        },
+        413
+      ),
+  })
+);
 
 // Use logger middleware for all routes.
 // logHandler covers `processLog` → `recordMetrics` + `broadcastLog` and
 // is what feeds the /log/stream SSE used by the legacy /public/ log
 // viewer and the in-process metrics store. Register it for both node
-// and bun so dev:desktop (which runs on bun via `npm run bun:dev`) shows
-// log entries the same way dev:node does.
+// and bun so desktop/web dev shows log entries the same way the Node server does.
 if (['node', 'bun'].includes(getRuntimeKey())) {
   app.use(logHandler());
 }

@@ -49,9 +49,9 @@ $EDITOR conf.json
 npm install
 
 # 3. Run the gateway (Node) — listens on http://localhost:8700
-npm run dev:node
+npm run dev
 # or, if you have Bun:
-bun run dev:node
+npm run dev:bun
 ```
 
 Talk to it with the OpenAI SDK:
@@ -100,6 +100,45 @@ What's translated automatically:
 - **Stream event shapes** — OpenAI `data: {...}` SSE ↔ Anthropic `event: ...\ndata: ...` SSE (`message_start`, `content_block_start`, `content_block_delta`, `message_delta`, `message_stop`)
 
 You can mix and match: a client sending the OpenAI shape can be routed to an Anthropic-native upstream, and vice versa, with no client changes.
+
+## Web / PostgreSQL deployment
+
+The gateway can run as a single web service behind the React admin UI. This is
+the mode used by the Render template in `llmadmin-ui`.
+
+```bash
+CONFIG_STORE=postgres \
+USAGE_STORE=postgres \
+DATABASE_URL='postgres://user:pass@host:5432/llmadmin' \
+ADMIN_TOKEN='<long-random-token>' \
+GATEWAY_API_KEY='<long-random-token>' \
+WEB_UI=true \
+PORT=8700 \
+node build/start-server.js
+```
+
+- `CONFIG_STORE=postgres` stores the unified config in `llmadmin_config`
+  (JSONB + version). `file` remains the desktop default; `memory` and `env`
+  are useful for tests and read-only demos.
+- `USAGE_STORE=postgres` persists daily usage aggregates in
+  `llmadmin_usage_daily`; `file` keeps the legacy `metrics.json` behaviour.
+- `ADMIN_TOKEN` protects `/admin/*` and `/log/stream`.
+- `GATEWAY_API_KEY` protects `/v1/*`; clients send
+  `Authorization: Bearer <key>` or `x-api-key`.
+- Tables are created automatically on first boot.
+
+Endpoints added for the web UI:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/admin/config` | gateway + unified config, version/ETag |
+| PUT | `/admin/config` | save gateway or unified document; optional `If-Match` |
+| DELETE | `/admin/config?category=` | clear one category, or the whole gateway block |
+| GET | `/admin/config/export` | full config (or `?redact=true`) |
+| POST | `/admin/config/import` | validate and replace the config |
+
+`GET /admin/health` is unauthenticated (liveness); `GET /admin/ready` checks the
+config store and returns 503 when PostgreSQL is unavailable.
 
 ## Configuration
 

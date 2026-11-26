@@ -49,9 +49,9 @@ $EDITOR conf.json
 npm install
 
 # 3. 启动网关（Node）—— 默认监听 http://localhost:8700
-npm run dev:node
+npm run dev
 # 如果你使用 Bun：
-bun run dev:node
+npm run dev:bun
 ```
 
 用 OpenAI SDK 调用：

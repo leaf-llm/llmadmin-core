@@ -1,12 +1,10 @@
-import { getRuntimeKey } from 'hono/adapter';
-import { stat } from 'fs/promises';
-
+import { ModelCategory, ProviderId } from '../types';
 import {
-  ModelCategory,
-  MODEL_CATEGORIES,
-  ProviderId,
-} from '../types';
-import { getConfig, getConfigPath, loadConfig } from '../../configShared';
+  ensureConfigLoaded,
+  getConfigVersion,
+  mutateConfig,
+  type UnifiedConfig,
+} from '../../storage';
 
 export const SUPPORTED_PROVIDERS: ProviderId[] = [
   'openai',
@@ -54,7 +52,7 @@ function createEmptyCategoryConfig(): CategoryConfig {
   return { routing: [], userConfig: null };
 }
 
-function getDefaultUiConfig(): UiConfigFile {
+export function getDefaultUiConfig(): UiConfigFile {
   return {
     providers: {},
     text: createEmptyCategoryConfig(),
@@ -65,44 +63,48 @@ function getDefaultUiConfig(): UiConfigFile {
   };
 }
 
-// mtime-based cache: conf.json 被任何写入者（前端、手动编辑等）修改后，
-// 下次调用 loadUiConfig 会通过 stat 检测到并重新加载。
-let cachedUiConfig: UiConfigFile | null = null;
-let cachedMtime: number | null = null;
+function normalizeCategory(value: any): CategoryConfig {
+  return {
+    routing: Array.isArray(value?.routing) ? value.routing : [],
+    userConfig:
+      value?.userConfig && typeof value.userConfig === 'object'
+        ? value.userConfig
+        : null,
+  };
+}
 
+export function normalizeUiConfig(gateway: any): UiConfigFile {
+  const defaults = getDefaultUiConfig();
+  return {
+    ...defaults,
+    ...(gateway && typeof gateway === 'object' ? gateway : {}),
+    providers:
+      gateway?.providers && typeof gateway.providers === 'object'
+        ? gateway.providers
+        : {},
+    text: normalizeCategory(gateway?.text),
+    image: normalizeCategory(gateway?.image),
+    video: normalizeCategory(gateway?.video),
+    audio: normalizeCategory(gateway?.audio),
+    mcp: normalizeCategory(gateway?.mcp),
+  };
+}
+
+/**
+ * Load the gateway section of the unified config. The storage layer owns
+ * caching / freshness; this function only maps to the UI shape.
+ */
 export async function loadUiConfig(): Promise<UiConfigFile> {
-  const runtime = getRuntimeKey();
-  if (runtime !== 'node' && runtime !== 'bun') {
-    throw new Error('UI config store is only supported in node or bun runtime');
-  }
+  const loaded = await ensureConfigLoaded();
+  return normalizeUiConfig(loaded.doc.gateway);
+}
 
-  const configPath = getConfigPath();
-  let currentMtime: number | null = null;
-  try {
-    const fileStat = await stat(configPath);
-    currentMtime = fileStat.mtimeMs;
-  } catch (e: any) {
-    if (e?.code !== 'ENOENT') throw e;
-  }
-
-  if (cachedUiConfig && cachedMtime === currentMtime) {
-    return cachedUiConfig;
-  }
-
-  await loadConfig();
-  const unified = getConfig() as any;
-  cachedUiConfig = unified?.gateway
-    ? {
-        providers: unified.gateway.providers || {},
-        text: unified.gateway.text,
-        image: unified.gateway.image,
-        video: unified.gateway.video,
-        audio: unified.gateway.audio,
-        mcp: unified.gateway.mcp,
-      }
-    : getDefaultUiConfig();
-  cachedMtime = currentMtime;
-  return cachedUiConfig;
+export async function loadUnifiedConfig(): Promise<{
+  doc: UnifiedConfig;
+  version: string;
+}> {
+  const loaded = await ensureConfigLoaded();
+  return { doc: loaded.doc, version: loaded.version };
 }
 
 export async function loadUserConfig(
@@ -110,6 +112,62 @@ export async function loadUserConfig(
 ): Promise<Record<string, unknown> | null> {
   const config = await loadUiConfig();
   return config[category]?.userConfig ?? null;
+}
+
+/**
+ * Persist only the gateway block, preserving settings/server and any unknown
+ * top-level keys. This is the write path used by the provider/routing pages.
+ */
+export async function saveUiConfig(
+  gateway: UiConfigFile
+): Promise<UiConfigFile> {
+  const next = await mutateConfig((doc) => ({
+    ...doc,
+    gateway,
+  }));
+  return normalizeUiConfig(next.doc.gateway);
+}
+
+/**
+ * Persist a complete unified document (settings + gateway + server). Used by
+ * the Settings raw editor and by config import. Unknown top-level keys already
+ * in storage are preserved unless the caller replaces the whole document.
+ */
+export async function saveUnifiedConfig(
+  unified: UnifiedConfig,
+  expectedVersion?: string
+): Promise<{ version: string }> {
+  const next = await mutateConfig(
+    (doc) => ({
+      ...doc,
+      ...unified,
+    }),
+    expectedVersion
+  );
+  return { version: next.version };
+}
+
+export async function replaceUnifiedConfig(
+  unified: UnifiedConfig,
+  expectedVersion?: string
+): Promise<{ version: string }> {
+  const next = await mutateConfig(() => unified, expectedVersion);
+  return { version: next.version };
+}
+
+export async function clearGatewayConfig(
+  category?: ModelCategory
+): Promise<UiConfigFile> {
+  const next = await mutateConfig((doc) => {
+    const gateway = normalizeUiConfig(doc.gateway);
+    if (category) {
+      gateway[category] = createEmptyCategoryConfig();
+    } else {
+      return { ...doc, gateway: getDefaultUiConfig() };
+    }
+    return { ...doc, gateway };
+  });
+  return normalizeUiConfig(next.doc.gateway);
 }
 
 export async function getProviderCredentialsForBilling(
@@ -132,3 +190,5 @@ export async function getProviderCredentialsForBilling(
   }
   return null;
 }
+
+export { getConfigVersion };

@@ -1,5 +1,6 @@
 import { Context } from 'hono';
 import { getRuntimeKey } from 'hono/adapter';
+import { recordUsageDelta } from '../../storage/usageStore';
 
 let logId = 0;
 const MAX_RESPONSE_LENGTH = 100000;
@@ -385,7 +386,8 @@ export function recordMetrics(status: number, requestOptionsArray: any[]) {
   }
 
   metrics.total++;
-  if (status >= 200 && status < 300) {
+  const success = status >= 200 && status < 300;
+  if (success) {
     metrics.success++;
     runtimeSuccess++;
   } else {
@@ -394,16 +396,24 @@ export function recordMetrics(status: number, requestOptionsArray: any[]) {
   }
 
   // Extract tokens from response if available
+  let tokenDelta = { inputTokens: 0, outputTokens: 0, cacheInputTokens: 0 };
   const response = activeAttempt?.response;
   if (response && typeof response === 'object') {
-    const tokens = extractTokens(response, provider);
-    metrics.inputTokens += tokens.inputTokens;
-    metrics.outputTokens += tokens.outputTokens;
-    metrics.cacheInputTokens += tokens.cacheInputTokens;
+    tokenDelta = extractTokens(response, provider);
+    metrics.inputTokens += tokenDelta.inputTokens;
+    metrics.outputTokens += tokenDelta.outputTokens;
+    metrics.cacheInputTokens += tokenDelta.cacheInputTokens;
   }
 
-  // Persist to disk (debounced)
+  // File mode: debounced metrics.json (legacy desktop behaviour).
+  // PostgreSQL mode: buffer a delta that the usage store flushes in batches.
   scheduleSave();
+  recordUsageDelta(provider, dateKey, {
+    total: 1,
+    success: success ? 1 : 0,
+    failure: success ? 0 : 1,
+    ...tokenDelta,
+  });
 }
 
 export const addLogClient = (clientId: any, client: LogClient) => {
