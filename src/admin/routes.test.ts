@@ -34,6 +34,21 @@ describe('admin config API', () => {
     expect(body.authRequired).toBe(true);
   });
 
+  it('allows desktop random localhost origins and CORS on health', async () => {
+    const origin = 'http://127.0.0.1:54321';
+    const health = await adminApp.request('/health', {
+      headers: { Origin: origin },
+    });
+    expect(health.status).toBe(200);
+    expect(health.headers.get('access-control-allow-origin')).toBe(origin);
+
+    const config = await adminApp.request('/config', {
+      headers: { ...AUTH, Origin: origin },
+    });
+    expect(config.status).toBe(200);
+    expect(config.headers.get('access-control-allow-origin')).toBe(origin);
+  });
+
   it('rejects unauthenticated config access', async () => {
     const res = await adminApp.request('/config');
     expect(res.status).toBe(401);

@@ -86,8 +86,26 @@ function getSelfOrigin(c: any): string {
   return `${proto}://${host}`;
 }
 
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' ||
+        url.hostname === '127.0.0.1' ||
+        url.hostname === '[::1]')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isAllowedAdminOrigin(origin: string, c: any): boolean {
-  return origin === getSelfOrigin(c) || allowedAdminOrigins().includes(origin);
+  return (
+    origin === getSelfOrigin(c) ||
+    (!isProduction() && isLoopbackOrigin(origin)) ||
+    allowedAdminOrigins().includes(origin)
+  );
 }
 
 function applyAdminCors(c: any): void {
@@ -155,6 +173,10 @@ async function adminAuth(c: any, next: any) {
 
 // Health/readiness must stay unauthenticated for platform checks.
 adminApp.get('/health', (c) => {
+  // The desktop webview runs on a random localhost port and calls this URL
+  // cross-origin; without CORS headers useBackendHealth shows "disconnected"
+  // even when the gateway is healthy.
+  applyAdminCors(c);
   const adminToken = getAdminToken(c);
   const gatewayKeys = parseTokenList(process.env.GATEWAY_API_KEY);
   return c.json({
@@ -182,6 +204,7 @@ adminApp.get('/health', (c) => {
 });
 
 adminApp.get('/ready', async (c) => {
+  applyAdminCors(c);
   try {
     await ensureConfigLoaded({ force: true });
     return c.json({
