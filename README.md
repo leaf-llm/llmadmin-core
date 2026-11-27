@@ -183,6 +183,27 @@ Every other folder under `src/providers/` (other than the two shared protocol ba
 
 To add a provider from this tier to the UI list, edit [`SUPPORTED_PROVIDERS`](./src/admin/config/store.ts) and follow the [Adding a new provider integration](./CONTRIBUTING.md#adding-a-new-provider-integration) guide.
 
+## Demo sandbox mode
+
+`DEMO_MODE=true` turns one deployment into a multi-visitor showcase: every
+browser that opens `/demo` gets an isolated, in-memory configuration document
+and its own API key, with no disk writes and no real provider calls.
+
+- `GET /demo` creates (or reuses) a signed-cookie session and redirects to the admin UI; `/demo?key=1` opens the key panel.
+- `POST /admin/session/key` issues (or rotates) a `dms_...` key; `DELETE` revokes it; `POST /admin/session/reset` restores the seed config.
+- Seeded providers point at the gateway's built-in mock upstream (`/__demo/mock/v1`), so routing, protocol conversion and streaming can be demoed without upstream cost. Provider URLs outside the mock are rejected.
+- Sessions expire after `DEMO_TTL_MINUTES` (default 30) of inactivity; budgets come from `DEMO_MAX_REQUESTS` (300), `DEMO_MAX_REQUESTS_PER_MINUTE` (60), `DEMO_MAX_SESSIONS` (200) and `DEMO_MAX_SESSIONS_PER_IP` (3).
+
+```bash
+DEMO_MODE=true DEMO_SECRET='<32+ random bytes>' WEB_UI=true USAGE_STORE=memory node build/start-server.js
+```
+
+Set `DEMO_SECRET` in production so deploys do not invalidate open sessions, and
+run a **single instance** — sandboxes live in process memory. The gateway
+address shown to visitors falls back to `DEMO_PUBLIC_BASE_URL`, then
+`RENDER_EXTERNAL_URL` (set automatically by Render), then the request origin,
+so no extra configuration is required on Render.
+
 ## Contributing
 
 We welcome PRs of any size. Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, project layout, how to add a new provider integration, and the PR process.
