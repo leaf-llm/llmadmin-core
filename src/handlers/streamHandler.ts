@@ -604,7 +604,15 @@ export function handleStreamingMode(
     });
   }
 
-  return new Response(readable, response);
+  // Copy the upstream headers into a fresh Headers object: passing the
+  // fetched Response as ResponseInit can hand back a Headers instance with
+  // the immutable guard, which makes later header writes (trace id, retry
+  // count, ...) throw.
+  return new Response(readable, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new Headers(response.headers),
+  });
 }
 
 export async function handleJSONToStreamResponse(

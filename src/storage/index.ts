@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import {
   ConfigReadOnlyError,
   ConfigConflictError,
@@ -19,9 +21,35 @@ const DEFAULT_CONFIG_PATH = './conf.json';
 let configPathOverride: string | null = null;
 let store: ConfigStore | null = null;
 
-let cached: LoadedConfig | null = null;
-let cacheLoadedAt = 0;
-let inFlight: Promise<LoadedConfig> | null = null;
+/**
+ * Request-scoped storage override.
+ *
+ * Demo mode serves every visitor from the same process, but each visitor owns
+ * an isolated configuration document. Rather than threading a store argument
+ * through every handler, the demo middleware runs the request inside this
+ * scope and all storage helpers below transparently resolve to that store.
+ *
+ * AsyncLocalStorage keeps concurrent requests from seeing each other's store,
+ * including across `await` boundaries.
+ */
+const requestScope = new AsyncLocalStorage<ConfigStore>();
+
+type StoreCache = {
+  loaded: LoadedConfig | null;
+  loadedAt: number;
+  inFlight: Promise<LoadedConfig> | null;
+};
+
+let cache = new WeakMap<ConfigStore, StoreCache>();
+
+function cacheFor(target: ConfigStore): StoreCache {
+  let entry = cache.get(target);
+  if (!entry) {
+    entry = { loaded: null, loadedAt: 0, inFlight: null };
+    cache.set(target, entry);
+  }
+  return entry;
+}
 
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -39,23 +67,15 @@ export function getConfigPath(): string {
   );
 }
 
-export function getStorageDriver(): ConfigStore['driver'] {
-  return getConfigStore().driver;
-}
-
-export function isConfigReadOnly(): boolean {
-  return getConfigStore().readOnly;
-}
-
 /**
- * Build (once) the configured storage driver.
- *
- * `auto` prefers PostgreSQL when DATABASE_URL is present, otherwise the local
- * JSON file. Production deployments should set CONFIG_STORE=postgres
- * explicitly so a missing database variable fails loudly instead of silently
- * falling back to ephemeral disk.
+ * The store that should serve the current call. Demo sessions install their
+ * own store through `withConfigStore`; everything else uses the process-wide
+ * driver built from the environment.
  */
 export function getConfigStore(): ConfigStore {
+  const scoped = requestScope.getStore();
+  if (scoped) return scoped;
+
   if (store) return store;
 
   const requested = (process.env.CONFIG_STORE || 'auto').toLowerCase();
@@ -91,20 +111,42 @@ export function getConfigStore(): ConfigStore {
   return store;
 }
 
+/** The store installed for the current request, if any. */
+export function getScopedConfigStore(): ConfigStore | undefined {
+  return requestScope.getStore();
+}
+
+/**
+ * Run `fn` with `nextStore` as the config store for the duration of the call.
+ * Used by the demo sandbox; regular deployments never call this.
+ */
+export function withConfigStore<T>(
+  nextStore: ConfigStore,
+  fn: () => T
+): T {
+  return requestScope.run(nextStore, fn);
+}
+
+export function getStorageDriver(): ConfigStore['driver'] {
+  return getConfigStore().driver;
+}
+
+export function isConfigReadOnly(): boolean {
+  return getConfigStore().readOnly;
+}
+
 /** Test seam: swap the driver and clear the in-process cache. */
 export function resetConfigStore(next?: ConfigStore): void {
   store = next ?? null;
-  cached = null;
-  cacheLoadedAt = 0;
-  inFlight = null;
+  cache = new WeakMap();
 }
 
-function cacheTtlMs(): number {
+function cacheTtlMs(target: ConfigStore = getConfigStore()): number {
   const configured = process.env.CONFIG_CACHE_TTL_MS;
   if (configured !== undefined && configured !== '') {
     return positiveInt(configured, 1000);
   }
-  return getConfigStore().driver === 'postgres' ? 5000 : 1000;
+  return target.driver === 'postgres' ? 5000 : 1000;
 }
 
 /**
@@ -114,35 +156,37 @@ function cacheTtlMs(): number {
 export async function ensureConfigLoaded(
   options: { force?: boolean } = {}
 ): Promise<LoadedConfig> {
+  const target = getConfigStore();
+  const entry = cacheFor(target);
   const force = options.force === true;
-  if (!force && cached && Date.now() - cacheLoadedAt < cacheTtlMs()) {
-    return cached;
+  if (!force && entry.loaded && Date.now() - entry.loadedAt < cacheTtlMs(target)) {
+    return entry.loaded;
   }
 
-  if (!inFlight) {
-    inFlight = (async () => {
-      const loaded = await getConfigStore().load();
-      cached = loaded ?? {
+  if (!entry.inFlight) {
+    entry.inFlight = (async () => {
+      const loaded = await target.load();
+      entry.loaded = loaded ?? {
         doc: createDefaultUnifiedConfig(),
         version: '0',
       };
-      cacheLoadedAt = Date.now();
-      return cached;
+      entry.loadedAt = Date.now();
+      return entry.loaded;
     })().finally(() => {
-      inFlight = null;
+      entry.inFlight = null;
     });
   }
 
-  return inFlight;
+  return entry.inFlight;
 }
 
 /** Synchronous read of the already-loaded cache. */
 export function getConfig(): UnifiedConfig | null {
-  return cached?.doc ?? null;
+  return cache.get(getConfigStore())?.loaded?.doc ?? null;
 }
 
 export function getConfigVersion(): string | null {
-  return cached?.version ?? null;
+  return cache.get(getConfigStore())?.loaded?.version ?? null;
 }
 
 /** Force a reload from storage and return the document. */
@@ -166,11 +210,12 @@ export async function mutateConfig(
   mutator: (current: UnifiedConfig) => UnifiedConfig,
   expectedVersion?: string
 ): Promise<LoadedConfig> {
-  const configStore = getConfigStore();
-  if (configStore.readOnly) {
+  const target = getConfigStore();
+  if (target.readOnly) {
     throw new ConfigReadOnlyError();
   }
 
+  const entry = cacheFor(target);
   let attempt = 0;
   for (;;) {
     const current = await ensureConfigLoaded({ force: true });
@@ -179,10 +224,10 @@ export async function mutateConfig(
     const expected = expectedVersion ?? current.version;
 
     try {
-      const saved = await configStore.save(next, expected);
-      cached = { doc: next, version: saved.version };
-      cacheLoadedAt = Date.now();
-      return cached;
+      const saved = await target.save(next, expected);
+      entry.loaded = { doc: next, version: saved.version };
+      entry.loadedAt = Date.now();
+      return entry.loaded;
     } catch (e) {
       if (
         e instanceof ConfigConflictError &&
@@ -211,7 +256,5 @@ export async function closeConfigStore(): Promise<void> {
     await store.close();
   }
   store = null;
-  cached = null;
-  cacheLoadedAt = 0;
-  inFlight = null;
+  cache = new WeakMap();
 }

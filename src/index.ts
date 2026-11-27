@@ -39,6 +39,12 @@ import { imageEditsHandler } from './handlers/imageEditsHandler';
 import { messagesCountTokensHandler } from './handlers/messagesCountTokensHandler';
 import modelResponsesHandler from './handlers/modelResponsesHandler';
 import { adminApp } from './admin/routes';
+import {
+  demoMiddleware,
+  demoV1Authorize,
+  isDemoMode,
+  registerDemoRoutes,
+} from './demo';
 
 // utils
 import { logger } from './apm';
@@ -64,6 +70,15 @@ app.use('*', async (c, next) => {
   c.header('Referrer-Policy', 'no-referrer');
   await next();
 });
+
+// Demo sandbox (self-hosted showcase mode). Registered before every other
+// route so the session-scoped config store is in place for the admin API and
+// the data plane, and so the internal mock upstream bypasses the routing
+// middleware stack.
+if (isDemoMode()) {
+  app.use('*', demoMiddleware);
+  registerDemoRoutes(app);
+}
 
 if (runtime === 'node' && process.env.REDIS_CONNECTION_STRING) {
   createCacheBackendsRedis(process.env.REDIS_CONNECTION_STRING);
@@ -179,6 +194,11 @@ function getWebSocketBearerToken(c: Context): string {
  */
 app.use('/v1/*', async (c, next) => {
   if (c.req.method === 'OPTIONS') return c.body(null, 204);
+  if (isDemoMode()) {
+    const denied = demoV1Authorize(c);
+    if (denied) return denied;
+    return next();
+  }
   if (isTruthy(process.env.GATEWAY_AUTH_DISABLED)) return next();
 
   const keys = getGatewayKeys();

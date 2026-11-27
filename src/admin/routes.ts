@@ -26,6 +26,11 @@ import {
   setPresetEnabled,
 } from './plugins';
 import { clearHandlerCache } from '../../plugins';
+import {
+  isDemoMode,
+  registerDemoAdminRoutes,
+  validateDemoUpstreams,
+} from '../demo';
 
 import {
   ensureConfigLoaded,
@@ -143,6 +148,18 @@ async function adminAuth(c: any, next: any) {
     return c.json({ ok: false, message: 'Origin not allowed' }, 403);
   }
 
+  if (isDemoMode()) {
+    if ((c as any).get('demoSession')) return next();
+    return c.json(
+      {
+        ok: false,
+        code: 'demo_session_required',
+        message: '演示会话已过期，请重新打开 Demo 页面。',
+      },
+      401
+    );
+  }
+
   const expected = getAdminToken(c);
   if (!expected) {
     if (isProduction() && !isAdminAuthDisabled()) {
@@ -242,6 +259,8 @@ adminApp.use(
 // ---------------------------------------------------------------------------
 
 function validateProviderUrls(gateway: any): string | null {
+  if (isDemoMode()) return validateDemoUpstreams(gateway);
+
   const providers = gateway?.providers;
   if (!providers || typeof providers !== 'object') return null;
   for (const [provider, configs] of Object.entries(providers)) {
@@ -876,5 +895,7 @@ adminApp.put('/plugins/:pluginId/presets/:presetId', async (c) => {
   const result = await setPresetEnabled(pluginId, presetId, parsed.data.enabled);
   return c.json(result);
 });
+
+registerDemoAdminRoutes(adminApp);
 
 export { adminApp };
