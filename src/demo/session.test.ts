@@ -129,6 +129,38 @@ describe('demo sessions', () => {
     expect(String(withKey.apiKey)).toMatch(/^dms_/);
   });
 
+  it('keeps sessions alive when DEMO_TTL_MINUTES is not set', () => {
+    const previous = process.env.DEMO_TTL_MINUTES;
+    delete process.env.DEMO_TTL_MINUTES;
+    try {
+      const session = create('10.0.0.12');
+      session.lastSeenAt = Date.now() - 7 * 24 * 3600_000;
+      expect(getDemoSession(session.id)?.id).toBe(session.id);
+      const view = demoSessionView(session, 'https://demo.example/v1');
+      expect(view.expiresAt).toBeNull();
+      expect(view.remainingSeconds).toBeNull();
+    } finally {
+      process.env.DEMO_TTL_MINUTES = previous;
+    }
+  });
+
+  it('evicts the least recently used session when the cap is reached', () => {
+    const previous = process.env.DEMO_MAX_SESSIONS;
+    process.env.DEMO_MAX_SESSIONS = '2';
+    try {
+      const first = create('10.1.0.1');
+      const second = create('10.1.0.2');
+      first.lastSeenAt = Date.now() - 60_000;
+      second.lastSeenAt = Date.now();
+      const third = create('10.1.0.3');
+      expect(getDemoSession(first.id)).toBeNull();
+      expect(getDemoSession(second.id)?.id).toBe(second.id);
+      expect(getDemoSession(third.id)?.id).toBe(third.id);
+    } finally {
+      process.env.DEMO_MAX_SESSIONS = previous;
+    }
+  });
+
   it('returns the same session for a known id and drops expired ones', () => {
     const session = create('10.0.0.11');
     expect(getDemoSession(session.id)?.id).toBe(session.id);

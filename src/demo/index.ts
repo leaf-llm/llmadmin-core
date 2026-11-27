@@ -110,7 +110,12 @@ function setDemoCookie(c: Context, sid: string): void {
     secure: isSecureRequest(c),
     // Cookie outlives the sliding session slightly so an active tab can
     // always refresh it; the server still enforces the real TTL.
-    maxAge: Math.floor(demoTtlMs() / 1000) + 600,
+    // Sessions have no TTL by default; the cookie then lives for 30 days and
+    // is refreshed on every visit.
+    maxAge: (() => {
+      const ttl = demoTtlMs();
+      return ttl > 0 ? Math.floor(ttl / 1000) + 600 : 30 * 24 * 3600;
+    })(),
   });
 }
 

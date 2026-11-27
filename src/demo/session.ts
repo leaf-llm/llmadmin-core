@@ -30,8 +30,12 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+/** 0 means "never expire"; sessions are then only evicted by the LRU cap. */
 export function demoTtlMs(): number {
-  return envInt('DEMO_TTL_MINUTES', 30) * 60_000;
+  const minutes = Number(process.env.DEMO_TTL_MINUTES);
+  if (!Number.isFinite(minutes)) return 0; // unset -> keep sessions around
+  if (minutes <= 0) return 0;
+  return Math.floor(minutes) * 60_000;
 }
 
 function maxSessions(): number {
@@ -106,7 +110,20 @@ export function hashDemoKey(key: string): string {
 }
 
 function isExpired(session: DemoSession, now: number): boolean {
-  return now - session.lastSeenAt > demoTtlMs();
+  const ttl = demoTtlMs();
+  return ttl > 0 && now - session.lastSeenAt > ttl;
+}
+
+/** Least-recently-used session, used to make room when the cap is hit. */
+function oldestSession(exceptIp?: string): DemoSession | null {
+  let oldest: DemoSession | null = null;
+  for (const session of sessions.values()) {
+    if (exceptIp && session.ip === exceptIp && sessionsByIp.get(exceptIp) === 1) {
+      continue;
+    }
+    if (!oldest || session.lastSeenAt < oldest.lastSeenAt) oldest = session;
+  }
+  return oldest;
 }
 
 function removeSession(session: DemoSession): void {
@@ -126,11 +143,18 @@ export function createDemoSession(ip: string): CreateSessionResult {
   sweepDemoSessions(now);
 
   if (sessions.size >= maxSessions()) {
-    return { ok: false, reason: 'global_limit' };
+    const victim = oldestSession(ip);
+    if (victim) removeSession(victim);
+    else return { ok: false, reason: 'global_limit' };
   }
   const perIp = sessionsByIp.get(ip) ?? 0;
   if (perIp >= maxSessionsPerIp()) {
-    return { ok: false, reason: 'ip_limit' };
+    // Recycle this IP's own oldest sandbox instead of turning visitors away.
+    const victim = [...sessions.values()]
+      .filter((s) => s.ip === ip)
+      .sort((a, b) => a.lastSeenAt - b.lastSeenAt)[0];
+    if (victim) removeSession(victim);
+    else return { ok: false, reason: 'ip_limit' };
   }
 
   const session: DemoSession = {
@@ -236,6 +260,7 @@ export function demoSessionView(
   gatewayUrl: string
 ): Record<string, unknown> {
   const limits = demoLimits();
+  const ttl = demoTtlMs();
   return {
     ok: true,
     demo: true,
@@ -244,11 +269,9 @@ export function demoSessionView(
     keyHint: session.keyHint,
     keyCreatedAt: session.keyCreatedAt,
     gatewayUrl,
-    expiresAt: new Date(session.lastSeenAt + demoTtlMs()).toISOString(),
-    remainingSeconds: Math.max(
-      0,
-      Math.floor((session.lastSeenAt + demoTtlMs() - Date.now()) / 1000)
-    ),
+    expiresAt: ttl > 0 ? new Date(session.lastSeenAt + ttl).toISOString() : null,
+    remainingSeconds:
+      ttl > 0 ? Math.max(0, Math.floor((session.lastSeenAt + ttl - Date.now()) / 1000)) : null,
     requestsUsed: session.requests,
     requestsRemaining: Math.max(0, limits.maxRequests - session.requests),
     limits,
