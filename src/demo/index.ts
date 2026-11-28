@@ -4,6 +4,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { isTruthy } from '../utils/auth';
 import { withConfigStore } from '../storage';
 import { demoMockApp } from './mockUpstream';
+import { trackDemoEvent } from './analytics';
 import {
   DEMO_COOKIE_NAME,
   consumeDemoBudget,
@@ -151,10 +152,19 @@ export async function demoMiddleware(c: Context, next: any): Promise<any> {
   if (!session) return next();
 
   (c as any).set('demoSession', session);
-  if (path === '/v1' || path.startsWith('/v1/')) {
-    setDemoCookie(c, session.id);
+  const isDataPlane = path === '/v1' || path.startsWith('/v1/');
+  if (isDataPlane) setDemoCookie(c, session.id);
+
+  const startedAt = Date.now();
+  const result = await withConfigStore(session.store, () => next());
+  if (isDataPlane) {
+    trackDemoEvent('request', {
+      path,
+      status: (c as any).res?.status ?? 0,
+      ms: Date.now() - startedAt,
+    });
   }
-  return withConfigStore(session.store, () => next());
+  return result;
 }
 
 /** `/demo` entry point plus the internal mock upstream. */

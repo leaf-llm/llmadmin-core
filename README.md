@@ -198,6 +198,23 @@ and its own API key, with no disk writes and no real provider calls.
 DEMO_MODE=true DEMO_SECRET='<32+ random bytes>' WEB_UI=true USAGE_STORE=memory node build/start-server.js
 ```
 
+### Demo analytics
+
+Point the gateway at the landing site's collector and it reports anonymised
+usage (`session_created`, `key_generated`, `request`, `config_reset`, ...) in
+small batches. Events are buffered in memory, flushed every ten minutes and
+dropped silently if the collector is unreachable; nothing is sent when the URL
+is unset.
+
+```bash
+DEMO_ANALYTICS_URL=https://llmadmin.dev/api/demo/collect
+DEMO_ANALYTICS_TOKEN=<shared secret>
+```
+
+Optional: `DEMO_ANALYTICS_FLUSH_MS` (minimum 10s), `DEMO_ANALYTICS_MAX_QUEUE`.
+The collector stores daily aggregates in Cloudflare KV and exposes
+`GET /api/demo/stats?days=7` behind the same token.
+
 Set `DEMO_SECRET` in production so deploys do not invalidate open sessions, and
 run a **single instance** — sandboxes live in process memory. The gateway
 address shown to visitors falls back to `DEMO_PUBLIC_BASE_URL`, then
