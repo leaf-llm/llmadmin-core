@@ -198,6 +198,11 @@ and its own API key, with no disk writes and no real provider calls.
 DEMO_MODE=true DEMO_SECRET='<32+ random bytes>' WEB_UI=true USAGE_STORE=memory node build/start-server.js
 ```
 
+Set `DEMO_SECRET` in production so deploys do not invalidate open sessions, and
+run a **single instance** — sandboxes live in process memory. The gateway
+address shown to visitors falls back to `DEMO_PUBLIC_BASE_URL`, then
+`RENDER_EXTERNAL_URL` (set automatically by Render), then the request origin,
+so no extra configuration is required on Render.
 
 ## Contributing
 
