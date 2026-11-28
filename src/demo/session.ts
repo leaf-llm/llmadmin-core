@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { buildDemoConfig } from './seed';
+import { trackDemoEvent } from './analytics';
 import { SessionConfigStore } from './sessionStore';
 
 export const DEMO_COOKIE_NAME = 'llmadmin_demo';
@@ -16,6 +17,7 @@ export type DemoSession = {
   keyHash: string | null;
   keyHint: string | null;
   keyCreatedAt: number | null;
+  bot: boolean;
   requests: number;
   windowStartedAt: number;
   windowRequests: number;
@@ -126,7 +128,8 @@ function oldestSession(exceptIp?: string): DemoSession | null {
   return oldest;
 }
 
-function removeSession(session: DemoSession): void {
+function removeSession(session: DemoSession, reason: string): void {
+  trackDemoEvent('session_closed', { reason });
   sessions.delete(session.id);
   if (session.keyHash) keys.delete(session.keyHash);
   const count = sessionsByIp.get(session.ip) ?? 0;
@@ -138,13 +141,16 @@ export type CreateSessionResult =
   | { ok: true; session: DemoSession }
   | { ok: false; reason: 'global_limit' | 'ip_limit' };
 
-export function createDemoSession(ip: string): CreateSessionResult {
+export function createDemoSession(
+  ip: string,
+  options: { bot?: boolean } = {}
+): CreateSessionResult {
   const now = Date.now();
   sweepDemoSessions(now);
 
   if (sessions.size >= maxSessions()) {
     const victim = oldestSession(ip);
-    if (victim) removeSession(victim);
+    if (victim) removeSession(victim, 'lru_global');
     else return { ok: false, reason: 'global_limit' };
   }
   const perIp = sessionsByIp.get(ip) ?? 0;
@@ -153,7 +159,7 @@ export function createDemoSession(ip: string): CreateSessionResult {
     const victim = [...sessions.values()]
       .filter((s) => s.ip === ip)
       .sort((a, b) => a.lastSeenAt - b.lastSeenAt)[0];
-    if (victim) removeSession(victim);
+    if (victim) removeSession(victim, 'lru_ip');
     else return { ok: false, reason: 'ip_limit' };
   }
 
@@ -167,6 +173,7 @@ export function createDemoSession(ip: string): CreateSessionResult {
     keyHash: null,
     keyHint: null,
     keyCreatedAt: null,
+    bot: options.bot === true,
     requests: 0,
     windowStartedAt: now,
     windowRequests: 0,
@@ -174,6 +181,7 @@ export function createDemoSession(ip: string): CreateSessionResult {
 
   sessions.set(session.id, session);
   sessionsByIp.set(ip, perIp + 1);
+  if (!session.bot) trackDemoEvent('session_created', { via: 'demo' });
   return { ok: true, session };
 }
 
@@ -182,7 +190,7 @@ export function getDemoSession(sid: string): DemoSession | null {
   if (!session) return null;
   const now = Date.now();
   if (isExpired(session, now)) {
-    removeSession(session);
+    removeSession(session, 'expired');
     return null;
   }
   session.lastSeenAt = now;
@@ -198,6 +206,7 @@ export function getDemoSessionByKey(key: string | undefined | null): DemoSession
 
 /** Issue (or rotate) the API key for a session. Returns the plaintext once. */
 export function issueDemoKey(session: DemoSession): string {
+  const rotated = Boolean(session.keyHash);
   if (session.keyHash) keys.delete(session.keyHash);
   const key = `${DEMO_KEY_PREFIX}${randomBytes(24).toString('base64url')}`;
   session.key = key;
@@ -205,11 +214,13 @@ export function issueDemoKey(session: DemoSession): string {
   session.keyHint = key.slice(-4);
   session.keyCreatedAt = Date.now();
   keys.set(session.keyHash, session.id);
+  trackDemoEvent('key_generated', { rotated });
   return key;
 }
 
 export function revokeDemoKey(session: DemoSession): void {
   if (session.keyHash) keys.delete(session.keyHash);
+  trackDemoEvent('key_revoked');
   session.key = null;
   session.keyHash = null;
   session.keyHint = null;
@@ -218,6 +229,7 @@ export function revokeDemoKey(session: DemoSession): void {
 
 /** Restore the session's config document to the pristine demo seed. */
 export function resetDemoSession(session: DemoSession): void {
+  trackDemoEvent('config_reset');
   session.store = new SessionConfigStore(buildDemoConfig(demoMockBaseUrl()));
   session.requests = 0;
   session.windowRequests = 0;
@@ -280,7 +292,7 @@ export function demoSessionView(
 
 export function sweepDemoSessions(now = Date.now()): void {
   for (const session of [...sessions.values()]) {
-    if (isExpired(session, now)) removeSession(session);
+    if (isExpired(session, now)) removeSession(session, 'expired');
   }
 }
 

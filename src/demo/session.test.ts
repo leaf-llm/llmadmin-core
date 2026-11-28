@@ -161,6 +161,15 @@ describe('demo sessions', () => {
     }
   });
 
+  it('flags crawler sessions so they stay out of the analytics', () => {
+    const result = createDemoSession('10.2.0.1', { bot: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.session.bot).toBe(true);
+      expect(getDemoSessionByKey('dms_nope')).toBeNull();
+    }
+  });
+
   it('returns the same session for a known id and drops expired ones', () => {
     const session = create('10.0.0.11');
     expect(getDemoSession(session.id)?.id).toBe(session.id);
