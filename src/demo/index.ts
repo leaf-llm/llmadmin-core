@@ -23,6 +23,14 @@ import {
   type DemoSession,
 } from './session';
 
+const BOT_UA = /bot|crawler|spider|crawl|headless|phantom|curl|wget|python|axios|node-fetch|go-http|java\/|facebookexternalhit|slackbot|telegrambot|discordbot|whatsapp|bingpreview|applebot|googleother/i;
+
+/** Crawlers that follow the landing link should not inflate the demo stats. */
+export function isLikelyBot(userAgent: string | undefined): boolean {
+  if (!userAgent) return true;
+  return BOT_UA.test(userAgent);
+}
+
 export function isDemoMode(): boolean {
   return isTruthy(process.env.DEMO_MODE);
 }
@@ -157,7 +165,7 @@ export async function demoMiddleware(c: Context, next: any): Promise<any> {
 
   const startedAt = Date.now();
   const result = await withConfigStore(session.store, () => next());
-  if (isDataPlane) {
+  if (isDataPlane && !session.bot) {
     trackDemoEvent('request', {
       path,
       status: (c as any).res?.status ?? 0,
@@ -205,12 +213,25 @@ export function demoV1Authorize(c: Context): Response | null {
 }
 
 export function registerDemoRoutes(app: Hono): void {
+  // Bots follow the landing link but never run our JS, so `/demo` itself no
+  // longer mints a sandbox: the UI calls `POST /demo/session` once it is
+  // actually running. That keeps crawl traffic out of the session counters.
   app.get('/demo', (c) => {
     const sid = verifySessionCookie(getCookie(c, DEMO_COOKIE_NAME));
+    const session = sid ? getDemoSession(sid) : null;
+    if (session) setDemoCookie(c, session.id);
+
+    const wantsKey = c.req.query('key');
+    return c.redirect(`/public/admin/${wantsKey ? '?key=1' : ''}`);
+  });
+
+  app.post('/demo/session', (c) => {
+    const sid = verifySessionCookie(getCookie(c, DEMO_COOKIE_NAME));
     let session = sid ? getDemoSession(sid) : null;
+    const bot = isLikelyBot(c.req.header('user-agent'));
 
     if (!session) {
-      const created = createDemoSession(demoClientIp(c));
+      const created = createDemoSession(demoClientIp(c), { bot });
       if (!created.ok) {
         const message =
           created.reason === 'ip_limit'
@@ -225,10 +246,7 @@ export function registerDemoRoutes(app: Hono): void {
     }
 
     setDemoCookie(c, session.id);
-    // `?key=1` opens the key panel straight away (used by the landing CTA),
-    // plain visits land on the routing page.
-    const wantsKey = c.req.query('key');
-    return c.redirect(`/public/admin/${wantsKey ? '?key=1' : ''}`);
+    return c.json(demoSessionView(session, demoGatewayUrl(c)));
   });
 
   app.route('/__demo/mock', demoMockApp);

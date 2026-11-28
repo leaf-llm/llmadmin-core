@@ -17,6 +17,7 @@ export type DemoSession = {
   keyHash: string | null;
   keyHint: string | null;
   keyCreatedAt: number | null;
+  bot: boolean;
   requests: number;
   windowStartedAt: number;
   windowRequests: number;
@@ -140,7 +141,10 @@ export type CreateSessionResult =
   | { ok: true; session: DemoSession }
   | { ok: false; reason: 'global_limit' | 'ip_limit' };
 
-export function createDemoSession(ip: string): CreateSessionResult {
+export function createDemoSession(
+  ip: string,
+  options: { bot?: boolean } = {}
+): CreateSessionResult {
   const now = Date.now();
   sweepDemoSessions(now);
 
@@ -169,6 +173,7 @@ export function createDemoSession(ip: string): CreateSessionResult {
     keyHash: null,
     keyHint: null,
     keyCreatedAt: null,
+    bot: options.bot === true,
     requests: 0,
     windowStartedAt: now,
     windowRequests: 0,
@@ -176,7 +181,7 @@ export function createDemoSession(ip: string): CreateSessionResult {
 
   sessions.set(session.id, session);
   sessionsByIp.set(ip, perIp + 1);
-  trackDemoEvent('session_created', { via: 'demo' });
+  if (!session.bot) trackDemoEvent('session_created', { via: 'demo' });
   return { ok: true, session };
 }
 
