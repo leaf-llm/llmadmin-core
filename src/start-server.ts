@@ -15,6 +15,7 @@ import {
   closeConfigStore,
 } from './configShared';
 import { safeEqual, tryParseBearerToken } from './utils/auth';
+import { isDemoMode } from './demo';
 import { initUsageStore, closeUsageStore } from './storage/usageStore';
 
 // Extract command line arguments
@@ -267,6 +268,20 @@ app.get('/log/stream', async (c: Context) => {
   // This stream can include full request/response logs, so it needs the same
   // protection as the admin API. The React UI uses fetch() so it can attach
   // the Authorization header (EventSource cannot).
+  // Demo sessions share one process with every other visitor, so the global
+  // log/usage stream must not be readable from a sandbox: it would leak other
+  // visitors' prompts. Answer 403 and let the UI fall back to its empty state.
+  if (isDemoMode()) {
+    return c.json(
+      {
+        ok: false,
+        code: 'demo_log_stream_disabled',
+        message: '演示环境不提供全局日志流',
+      },
+      403
+    );
+  }
+
   const expectedToken = String(process.env.ADMIN_TOKEN || '').trim();
   if (expectedToken) {
     const provided =
